@@ -29,7 +29,7 @@ The authoritative Git ref is the head of branch `native-d3d8-perf` on
 `origin`:
 
 ```powershell
-git clone https://github.com/GTTeancum/Jedi-Academy-X.git Star-Trek-Elite-Force-X
+git clone https://github.com/GTTeancum/Star-Trek-Elite-Force-X.git
 Set-Location Star-Trek-Elite-Force-X
 git checkout native-d3d8-perf
 ```
