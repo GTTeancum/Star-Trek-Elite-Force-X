@@ -25,6 +25,8 @@ stability and performance pass after the Holomatch and Voyager Crew work.
 
 ## Screenshots
 
+![Single-player campaign gameplay in Borg territory](docs/screenshots/single-player-borg1.png)
+
 | Four-player Holomatch | Bot-backed four-viewport test setup |
 | --- | --- |
 | ![Four simultaneous Holomatch viewports](docs/screenshots/holomatch-four-player.png) | ![Player one setup with bot-backed viewports two through four](docs/screenshots/holomatch-bot-setup.png) |
