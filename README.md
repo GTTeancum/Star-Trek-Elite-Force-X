@@ -29,8 +29,6 @@ stability and performance pass after the Holomatch and Voyager Crew work.
 | --- | --- |
 | ![Four simultaneous Holomatch viewports](docs/screenshots/holomatch-four-player.png) | ![Player one setup with bot-backed viewports two through four](docs/screenshots/holomatch-bot-setup.png) |
 
-![Direct Bink FMV playback](docs/screenshots/bink-fmv-playback.png)
-
 ## Resume From This Exact Checkpoint
 
 The authoritative Git ref is the head of branch `native-d3d8-perf` on
