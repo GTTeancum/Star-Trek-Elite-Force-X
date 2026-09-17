@@ -466,6 +466,11 @@ void CL_GetGlconfig( glconfig_t *glconfig ) {
 	efGlconfig->vidWidth = cls.glconfig.vidWidth > 0 ? cls.glconfig.vidWidth : 640;
 	efGlconfig->vidHeight = cls.glconfig.vidHeight > 0 ? cls.glconfig.vidHeight : 480;
 	efGlconfig->windowAspect = (float)efGlconfig->vidWidth / (float)efGlconfig->vidHeight;
+#ifdef _XBOX
+    extern float GLW_GetPixelAspect(void);
+    efGlconfig->windowAspect *= GLW_GetPixelAspect();
+#endif
+
 	efGlconfig->displayFrequency = cls.glconfig.displayFrequency;
 	efGlconfig->isFullscreen = cls.glconfig.isFullscreen;
 	efGlconfig->stereoEnabled = cls.glconfig.stereoEnabled;

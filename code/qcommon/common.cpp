@@ -29,6 +29,12 @@ extern "C" volatile unsigned int g_SPXBPerfFrontendMsec;
 extern "C" volatile unsigned int g_SPXBPerfBackendMsec;
 extern "C" volatile unsigned int g_SPXBPerfComEventMsec;
 extern "C" volatile unsigned int g_SPXBPerfComCommandMsec;
+extern "C" volatile unsigned int g_SPXBCmdExecCount;
+extern "C" volatile char g_SPXBCmdLast[128];
+// Count, up to 10 twelve-word rows, version at 128. Rows contain six timings,
+// command counts for both buffers, then the last command (16 bytes).
+// Read only by the external test harness after emulation is paused.
+extern "C" { volatile unsigned int g_SPXBLongFrames[129] = {0}; }
 extern bool Sys_IsDirectMapBoot(void);
 #endif
 
@@ -377,7 +383,7 @@ void QDECL Com_Error( int code, const char *fmt, ... ) {
 	va_end (argptr);	
 
 #ifdef _XBOX
-	XBLF("JA: Com_Error code=%d message=%s", code, com_errorMessage);
+	XBLog_WriteCriticalf("JA: Com_Error code=%d message=%s", code, com_errorMessage);
 #if defined(STEFX_SP_HOSTED_MP)
 	XBLog_WriteCriticalf("STEFX_HM_SP: Com_Error code=%d message='%s'",
 		code, com_errorMessage);
@@ -1289,7 +1295,10 @@ void Com_Init( char *commandLine ) {
 		XBLog_Write("STEFX_INPUT_AUDIT begin");
 		Key_XboxAuditMenuBindings();
 		XBLog_Write("STEFX_INPUT_AUDIT end");
-#if defined(STEFX_SP_HOSTED_MP)
+		/* Applies to SP and SP-hosted Holomatch alike: PAK2.PK3 ships the
+		 * retail PC default.cfg whose unbindall wins the Xbox filesystem
+		 * lookup and strips every button binding.  Without this block the
+		 * SP build boots with analog look/move only and no usable buttons. */
 		/* BaseEF/PAK2.PK3 also contains the retail PC default.cfg, whose
 		 * unbindall wins the ambiguous filesystem lookup on Xbox.  Apply the
 		 * canonical loose Xbox defaults directly after all file-backed config
@@ -1326,7 +1335,6 @@ void Com_Init( char *commandLine ) {
 			Cvar_VariableValue("sensitivityY"),
 			Cvar_VariableValue("joy_deadzone"));
 		Key_XboxAuditMenuBindings();
-#endif
 #endif
 
 		// override anything from the config files with command line args
@@ -1654,6 +1662,9 @@ void Com_Frame( void ) {
 	int xboxPerfClientStart = xboxPerfFrameStart;
 	unsigned int xboxPerfComEventMsec = 0;
 	unsigned int xboxPerfComCommandMsec = 0;
+	unsigned int xboxFirstCommandMsec = 0, xboxSecondCommandMsec = 0;
+	unsigned int xboxCommandStart = 0;
+	unsigned int xboxCommandSerial = 0, xboxFirstCommands = 0, xboxSecondCommands = 0;
 #endif
 #if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	g_SPXBComFrameDepth++;
@@ -1771,7 +1782,15 @@ try
 	if (s_xboxTraceComPhase) XBLog_Write("JA: COM_PHASE before first Cbuf_Execute");
 	xboxPerfPhaseStart = Sys_Milliseconds();
 #endif
+#ifdef _XBOX
+	xboxCommandStart = (unsigned int)Sys_Milliseconds();
+	xboxCommandSerial = g_SPXBCmdExecCount;
+#endif
 	Cbuf_Execute ();
+#ifdef _XBOX
+	xboxFirstCommandMsec = (unsigned int)Sys_Milliseconds() - xboxCommandStart;
+	xboxFirstCommands = g_SPXBCmdExecCount - xboxCommandSerial;
+#endif
 #if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	xboxPerfComCommandMsec += (unsigned int)(Sys_Milliseconds() - xboxPerfPhaseStart);
 	g_SPXBComTailStage = 0x434D3031; /* 'CM01' */
@@ -1880,7 +1899,15 @@ try
 		else
 #endif
 		{
+			#ifdef _XBOX
+			xboxCommandStart = (unsigned int)Sys_Milliseconds();
+			xboxCommandSerial = g_SPXBCmdExecCount;
+			#endif
 			Cbuf_Execute ();
+			#ifdef _XBOX
+			xboxSecondCommandMsec = (unsigned int)Sys_Milliseconds() - xboxCommandStart;
+			xboxSecondCommands = g_SPXBCmdExecCount - xboxCommandSerial;
+			#endif
 		}
 		#ifdef _XBOX
 		g_SPXBComTailStage = 0x434D3039; /* 'CM09': command buffer complete */
@@ -1928,6 +1955,34 @@ try
 		g_SPXBPerfBackendMsec = com_speeds->integer ? (unsigned int)time_backend : 0;
 		g_SPXBPerfComEventMsec = xboxPerfComEventMsec;
 		g_SPXBPerfComCommandMsec = xboxPerfComCommandMsec;
+		// Keep rare long frames visible in retail logs. Window averages can
+		// otherwise hide the exact frame and whether the server or client stalled.
+		if (g_SPXBPerfFrameMsec >= 250)
+		{
+			static unsigned int s_longFrameLogs = 0;
+			if (s_longFrameLogs < 10)
+			{
+				++s_longFrameLogs;
+				const unsigned int slot = 1 + (s_longFrameLogs - 1) * 12;
+				g_SPXBLongFrames[slot] = (unsigned int)com_frameTime;
+				g_SPXBLongFrames[slot + 1] = g_SPXBPerfFrameMsec;
+				g_SPXBLongFrames[slot + 2] = g_SPXBPerfServerMsec;
+				g_SPXBLongFrames[slot + 3] = g_SPXBPerfClientMsec;
+				g_SPXBLongFrames[slot + 4] = xboxFirstCommandMsec;
+				g_SPXBLongFrames[slot + 5] = xboxSecondCommandMsec;
+				g_SPXBLongFrames[slot + 6] = xboxFirstCommands;
+				g_SPXBLongFrames[slot + 7] = xboxSecondCommands;
+				volatile char *lastCommand = (volatile char *)&g_SPXBLongFrames[slot + 8];
+				for (unsigned int copy = 0; copy < 16; ++copy)
+					lastCommand[copy] = g_SPXBCmdLast[copy];
+				g_SPXBLongFrames[128] = 3;
+				g_SPXBLongFrames[0] = s_longFrameLogs;
+				XBLog_WriteCriticalf("STEFX_LONG_FRAME: realtime=%d total=%u server=%u client=%u commands=%u/%u",
+					com_frameTime, g_SPXBPerfFrameMsec,
+					g_SPXBPerfServerMsec, g_SPXBPerfClientMsec,
+					xboxFirstCommandMsec, xboxSecondCommandMsec);
+			}
+		}
 		XBPerf_EndFrame();
 #endif
 #if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)

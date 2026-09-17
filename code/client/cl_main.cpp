@@ -3,6 +3,7 @@
 // leave this as first line for PCH reasons...
 //
 #include "../server/exe_headers.h"
+#include "../game/statindex.h"
 
 #ifdef _XBOX
 #include "../win32/xb_log.h"
@@ -65,6 +66,9 @@ extern "C" volatile unsigned int g_SPXBSplitP2RefdefValid;
 extern "C" volatile unsigned int g_SPXBSplitP2CurX;
 extern "C" volatile unsigned int g_SPXBSplitP2CurY;
 extern "C" volatile unsigned int g_SPXBSplitP2CurZ;
+extern "C" volatile unsigned int g_SPXBPhysTotal;
+extern "C" volatile unsigned int g_SPXBPhysAvail;
+extern "C" volatile unsigned int g_SPXBAudioMemUsed;
 extern "C" volatile unsigned int g_SPXBScratchMode;
 extern "C" volatile unsigned int g_SPXBScratchFlip;
 extern "C" volatile unsigned int g_SPXBScratchDraws;
@@ -131,6 +135,7 @@ extern "C" unsigned int STEFX_SkinTextureFetchCount( void );
 extern "C" unsigned int STEFX_SkinTextureWaitCount( void );
 extern "C" unsigned int STEFX_SkinTextureBytesWritten( void );
 extern "C" unsigned int STEFX_SkinTextureBytesRead( void );
+extern "C" void STEFX_ReportTexturePools( void );
 extern "C" unsigned int STEFX_StaticTextureUsed( void );
 extern "C" unsigned int STEFX_StaticTextureCapacity( void );
 extern "C" unsigned int STEFX_SkinTextureUsed( void );
@@ -1768,8 +1773,97 @@ CL_Frame
 extern cvar_t	*cl_newClock;
 static unsigned int frameCount;
 float avgFrametime=0.0;
+#ifdef _XBOX
+static unsigned int s_stefxFpsExcludedChecks = 0;
+static unsigned int s_stefxFpsMapHash = 0;
+static unsigned int s_stefxFrameTimeBins[256];
+static unsigned int s_stefxFrameTimeCount, s_stefxFrameTimeMax, s_stefxFrameTimeOver50;
+static unsigned int s_stefxFrameTimeElapsed;
+static unsigned int s_stefxFrameTimePrevious;
+static qboolean s_stefxFrameTimeStarted = qfalse;
+static void CL_STEFX_RecordFrameTime(void)
+{
+	const unsigned int now = (unsigned int)Sys_Milliseconds();
+	if (s_stefxFrameTimeStarted) {
+		const unsigned int elapsed = now - s_stefxFrameTimePrevious;
+		++s_stefxFrameTimeBins[elapsed < 255u ? elapsed : 255u];
+		++s_stefxFrameTimeCount;
+		s_stefxFrameTimeElapsed += elapsed;
+		if (elapsed > s_stefxFrameTimeMax) s_stefxFrameTimeMax = elapsed;
+		if (elapsed > 50u) ++s_stefxFrameTimeOver50;
+	}
+	s_stefxFrameTimePrevious = now;
+	s_stefxFrameTimeStarted = qtrue;
+}
+static unsigned int CL_STEFX_FrameTimePercentile(unsigned int percent)
+{
+	const unsigned int rank = (s_stefxFrameTimeCount * percent + 99u) / 100u;
+	unsigned int bin, count = 0;
+	if (!rank) return 0;
+	for (bin = 0; bin < 256; ++bin) {
+		count += s_stefxFrameTimeBins[bin];
+		// Overflow-bin percentiles are conservative upper bounds, not 255ms.
+		if (count >= rank) return bin < 255u ? bin : s_stefxFrameTimeMax;
+	}
+	return s_stefxFrameTimeMax;
+}
+extern "C" volatile unsigned int g_SPXBMapHash;
+void CL_STEFX_ExcludeBlockingMovieFromFps(void)
+{
+	// Blocking movies run outside CL_Frame. Latch the whole overlapping window,
+	// since entry/exit checks alone see CA_ACTIVE on both sides of the movie.
+	++s_stefxFpsExcludedChecks;
+}
+static void CL_STEFX_MarkFpsContext(void)
+{
+	qboolean excluded = (cls.state != CA_ACTIVE || (cls.keyCatchers & KEYCATCH_UI)) ? qtrue : qfalse;
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	extern qboolean STEFX_XboxSuppressPlayerPresentation(void);
+	if (!excluded && STEFX_XboxSuppressPlayerPresentation())
+		excluded = qtrue;
+	// Do not qualify a stationary death view as campaign gameplay. Latching
+	// this at both frame boundaries also excludes the window containing death.
+	if (!excluded && (!cl.frame.valid || cl.frame.ps.stats[STAT_HEALTH] <= 0)) {
+		static int deathLogBudget = 4;
+		excluded = qtrue;
+		if (deathLogBudget > 0 && cl.frame.valid) {
+			XBLog_WriteCriticalf("STEFX_FPS_EXCLUDE: dead SP player health=%d serverTime=%d",
+				cl.frame.ps.stats[STAT_HEALTH], cl.serverTime);
+			--deathLogBudget;
+		}
+	}
+#endif
+	if (s_stefxFpsMapHash != g_SPXBMapHash) {
+		s_stefxFpsMapHash = g_SPXBMapHash;
+		excluded = qtrue;
+	}
+	if (excluded)
+		++s_stefxFpsExcludedChecks;
+}
+static void CL_STEFX_WriteFpsWithContext(char *msg, unsigned int capacity)
+{
+	const unsigned int used = strlen(msg);
+	if (used < capacity) {
+		// ft: count / elapsed ms / max ms / p95 upper ms / p99 upper ms / >50ms count.
+		// Sys_Milliseconds elapsed includes stalls that simulation-time clamping hides.
+		_snprintf(msg + used, capacity - used, " ft=%u/%u/%u/%u/%u/%u gameplay=%d excludedChecks=%u",
+			s_stefxFrameTimeCount, s_stefxFrameTimeElapsed, s_stefxFrameTimeMax,
+			CL_STEFX_FrameTimePercentile(95), CL_STEFX_FrameTimePercentile(99), s_stefxFrameTimeOver50,
+			s_stefxFpsExcludedChecks == 0 ? 1 : 0, s_stefxFpsExcludedChecks);
+		msg[capacity - 1] = '\0';
+	}
+	XBLog_WriteFpsProfile(msg);
+	s_stefxFpsExcludedChecks = 0;
+	memset(s_stefxFrameTimeBins, 0, sizeof(s_stefxFrameTimeBins));
+	s_stefxFrameTimeCount = s_stefxFrameTimeMax = s_stefxFrameTimeOver50 = 0;
+	s_stefxFrameTimeElapsed = 0;
+}
+#endif
 void CL_Frame ( int msec,float fractionMsec ) {
 #ifdef _XBOX
+	// Latch non-gameplay at both ends so a window crossing the intro/menu
+	// boundary cannot be accepted merely because its last frame is gameplay.
+	CL_STEFX_MarkFpsContext();
 	g_SPXBClsState = (unsigned int)cls.state;
 #if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	static int s_xboxFrameHeartbeat = 0;
@@ -2526,6 +2620,8 @@ void CL_Frame ( int msec,float fractionMsec ) {
 
 	cls.framecount++;
 #ifdef _XBOX
+	CL_STEFX_MarkFpsContext();
+	CL_STEFX_RecordFrameTime();
 	#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	{
 		const int xboxPerfClientPhaseEnd = Sys_Milliseconds();
@@ -2880,7 +2976,22 @@ void CL_Frame ( int msec,float fractionMsec ) {
 					(unsigned int)g_SPXBScratchFallbacks,
 					(unsigned int)g_SPXBScratchWaitMsec);
 				msg[sizeof(msg) - 1] = '\0';
-				XBLog_WriteFpsProfile(msg);
+				CL_STEFX_WriteFpsWithContext(msg, sizeof(msg));
+				_snprintf(
+					msg, sizeof(msg) - 1,
+					"STEFX_HW_MEMREPORT: physTotal=%u physAvail=%u physUsed=%u zoneUsed=%u zoneFree=%u zoneLargest=%u audioUsed=%u staticTexKB=%u skinTexKB=%u",
+					(unsigned int)g_SPXBPhysTotal,
+					(unsigned int)g_SPXBPhysAvail,
+					(unsigned int)(g_SPXBPhysTotal - g_SPXBPhysAvail),
+					(unsigned int)memStats.usedBytes,
+					(unsigned int)memStats.freeBytes,
+					(unsigned int)memStats.largestFreeBlock,
+					(unsigned int)g_SPXBAudioMemUsed,
+					STEFX_StaticTextureUsed() / 1024u,
+					STEFX_SkinTextureUsed() / 1024u);
+				STEFX_ReportTexturePools();
+				msg[sizeof(msg) - 1] = 0;
+				XBLog_WriteFrameProfile(msg);
 				s_xboxLastTextHeartbeatTime = cls.realtime;
 			}
 
@@ -3080,7 +3191,7 @@ void CL_Frame ( int msec,float fractionMsec ) {
 				(unsigned int)g_SPXBScratchFallbacks,
 				(unsigned int)g_SPXBScratchWaitMsec);
 			msg[sizeof(msg) - 1] = '\0';
-			XBLog_WriteFpsProfile(msg);
+			CL_STEFX_WriteFpsWithContext(msg, sizeof(msg));
 			s_xboxLastHeartbeatTime = cls.realtime;
 			s_xboxLastHeartbeatFrame = cls.framecount;
 		}
@@ -3739,6 +3850,11 @@ void CL_Init( void ) {
 	Cmd_AddCommand ("cinematic", CL_PlayCinematic_f);
 	Cmd_AddCommand ("ingamecinematic", CL_PlayInGameCinematic_f);
 	Cmd_AddCommand ("uimenu", CL_GenericMenu_f);
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	// Original EF tour entities and holodeck scripts issue these command names.
+	Cmd_AddCommand ("genericmenu", CL_GenericMenu_f);
+	Cmd_AddCommand ("endholodeckmenu", CL_GenericMenu_f);
+#endif
 	Cmd_AddCommand ("datapad", CL_DataPad_f);
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	Cmd_AddCommand ("ef_objectives_overlay", CL_STEFX_ObjectivesOverlay_f);

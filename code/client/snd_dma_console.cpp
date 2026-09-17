@@ -24,6 +24,7 @@ extern "C" volatile unsigned int g_SPXBHMAudioBackendState;
 extern "C" volatile unsigned int g_SPXBHMAudioBeginRegistrationCount;
 extern "C" volatile unsigned int g_SPXBHMAudioListenerState;
 extern "C" volatile unsigned int g_SPXBHMAudioVoiceStartCount;
+extern "C" volatile unsigned int g_SPXBAudioMemUsed;
 extern "C" volatile unsigned int g_SPXBHMAudioLipActiveCount;
 extern "C" volatile unsigned int g_SPXBHMAudioListenerUpdateMask;
 extern "C" volatile unsigned int g_SPXBAudioUpdateStage;
@@ -74,6 +75,7 @@ unsigned int S_HashName( const char *name );
 static int SND_FreeSFXMem(sfx_t *sfx);
 #ifdef _XBOX
 extern qboolean FS_STEFX_FreeHeapFileBuffer(void *buffer);
+extern void QAL_SetSourceVoice(ALuint source, bool isVoice);
 #endif
 
 #if defined(STEFX_SP_HOSTED_MP)
@@ -2194,6 +2196,23 @@ void S_StartSound(const vec3_t origin, int entityNum, soundChannel_t entchannel,
 	if(entchannel == CHAN_VOICE_GLOBAL || entchannel == CHAN_ANNOUNCER)
 		is2D	= true;
 
+#ifdef _XBOX
+	// Diagnostic: s_voice2D 1 forces dialogue onto the non-positional path,
+	// bypassing 3D processing (HRTF, distance, panning) while leaving the
+	// file, decoder and mixer identical.  Discriminates 'asset is dull' from
+	// '3D playback dulls it'.  0 = normal behaviour.
+	{
+		static cvar_t *s_voice2DCvar = NULL;
+		if (!s_voice2DCvar) s_voice2DCvar = Cvar_Get("s_voice2D", "0", 0);
+		if (s_voice2DCvar && s_voice2DCvar->integer &&
+			(entchannel == CHAN_VOICE || entchannel == CHAN_VOICE_ATTEN))
+		{
+			is2D = true;
+		}
+	}
+#endif
+
+
 	// super hack so we can hear the explosionson t2_wedge
 	if( !stricmp(S_XboxLevelMapName(), "t2_wedge") && (flags & (1 <<SFF_TIEEXPLODE)))
 		is2D	= true;
@@ -3206,10 +3225,14 @@ static void PlaySingleShot(channel_t *ch)
 		return;
 	}
 
+	#ifdef _XBOX
+	QAL_SetSourceVoice(ch->alSource, isVoice != qfalse);
+	#endif
 	alSourcei(ch->alSource, AL_LOOPING, AL_FALSE);
 	
 	UpdateAttenuation(ch);
 	UpdatePosition(ch);
+	UpdateGain(ch);
 	
 	// Attach buffer to source
 	alSourcei(ch->alSource, AL_BUFFER, ch->thesfx->Buffer);
@@ -3421,6 +3444,9 @@ void UpdateLoopingSounds()
 			ch->origin[2] = loop->origin[2];
 			ch->bOriginDirty = true;
 
+			#ifdef _XBOX
+			QAL_SetSourceVoice(ch->alSource, false);
+			#endif
 			alSourcei(ch->alSource, AL_LOOPING, AL_TRUE);
 			alSourcei(ch->alSource, AL_BUFFER, ch->thesfx->Buffer);
 			UpdateAttenuation(ch);
@@ -3873,6 +3899,11 @@ void S_Update_(void)
 	UpdateLoopingSounds();
 #ifdef _XBOX
 	g_SPXBHMAudioLipActiveCount = (unsigned int)xboxActiveVoiceChannels;
+	{
+		ALint audioBytes = 0;
+		alGeti(AL_MEMORY_USED, &audioBytes);
+		g_SPXBAudioMemUsed = (unsigned int)audioBytes;
+	}
 #endif
 }
 

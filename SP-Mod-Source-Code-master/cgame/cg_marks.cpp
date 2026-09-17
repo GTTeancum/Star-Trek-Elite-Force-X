@@ -3,6 +3,38 @@
 #include "cg_local.h"
 #include "cg_media.h"
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#define STEFX_COOP_SHADOW_CACHE 1
+#include "stefx_shadow_cache.h"
+static stefxShadowCache_t s_shadowCache;
+static vmCvar_t s_shadowMode, s_shadowGameMode;
+static bool s_shadowRegistered;
+static int s_shadowFrame=-1;
+// mode, queries, hits, misses, stores, capacity rejects, verified, mismatches,
+// avoided fragments, avoided points, bounded bytes, invalidations.
+extern "C" volatile unsigned int g_SPXBCoopShadowCache[12]={0};
+extern "C" void XBLog_WriteCritical(const char *text);
+static int STEFX_ShadowCacheMode() {
+	int mode=0;
+	if (cg_stefxSplitScreen.integer && cg_stefxSplitScreenPlayers.integer>=2) {
+		if (!s_shadowRegistered) {
+			cgi_Cvar_Register(&s_shadowMode,"cg_efCoopShadowCache","0",0);
+			cgi_Cvar_Register(&s_shadowGameMode,"stefx_splitScreenMode","coop",0);
+			s_shadowRegistered=true;
+		}
+		if (s_shadowFrame!=cg.clientFrame) {
+			s_shadowFrame=cg.clientFrame;
+			cgi_Cvar_Update(&s_shadowMode); cgi_Cvar_Update(&s_shadowGameMode);
+		}
+		if (!s_shadowCache.failed && !Q_stricmp(s_shadowGameMode.string,"coop") &&
+			(s_shadowMode.integer==1 || s_shadowMode.integer==2)) mode=s_shadowMode.integer;
+	}
+	g_SPXBCoopShadowCache[0]=mode;
+	g_SPXBCoopShadowCache[10]=sizeof(s_shadowCache);
+	return mode;
+}
+#endif
+
 /*
 ===================================================================
 
@@ -25,6 +57,11 @@ This is called at startup and for tournement restarts
 */
 void	CG_InitMarkPolys( void ) {
 	int		i;
+#if STEFX_COOP_SHADOW_CACHE
+	// Both CG_PreInit (new world) and CG_RestartLevel call this reset.
+	s_shadowCache.Reset(); s_shadowFrame=-1;
+	++g_SPXBCoopShadowCache[11];
+#endif
 
 	memset( cg_markPolys, 0, sizeof(cg_markPolys) );
 
@@ -144,6 +181,15 @@ void CG_ImpactMark( qhandle_t markShader, const vec3_t origin, const vec3_t dir,
 
 	// get the fragments
 	VectorScale( dir, -20, projection );
+#if STEFX_COOP_SHADOW_CACHE
+	const int shadowMode=(temporary && markShader==cgs.media.shadowMarkShader) ? STEFX_ShadowCacheMode() : 0;
+	if (shadowMode) {
+		numFragments=s_shadowCache.Call(shadowMode,originalPoints,projection,
+			MAX_MARK_POINTS,markPoints[0],MAX_MARK_FRAGMENTS,markFragments,
+			cgi_CM_MarkFragments,g_SPXBCoopShadowCache);
+		if (s_shadowCache.failed) XBLog_WriteCritical("STEFX_COOP_SHADOW_CACHE: geometry mismatch; retained original and disabled cache");
+	} else
+#endif
 	numFragments = cgi_CM_MarkFragments( 4, (const float (*)[3])originalPoints,
 					projection, MAX_MARK_POINTS, markPoints[0],
 					MAX_MARK_FRAGMENTS, markFragments );
@@ -265,4 +311,3 @@ void CG_AddMarks( void ) {
 		cgi_R_AddPolyToScene( mp->markShader, mp->poly.numVerts, mp->verts );
 	}
 }
-

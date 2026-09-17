@@ -1631,6 +1631,10 @@ void RE_Shutdown( qboolean destroyWindow ) {
 #endif
 		R_SyncRenderThread();
 		R_ShutdownCommandBuffers();
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+		extern void R_STEFX_CoopSkinShutdown(void);
+		R_STEFX_CoopSkinShutdown();
+#endif
 //#ifndef _XBOX
 		if (destroyWindow)
 //#endif

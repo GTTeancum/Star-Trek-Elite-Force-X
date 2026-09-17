@@ -715,6 +715,18 @@ static void EFPause_DrawText(int x, int y, const char *text, int style, int colo
 	EFPause_DrawPropString(x, y, text, style, colorIndex);
 }
 
+// Shared EF atlas rendering for parser-menu adapters. These fonts use the
+// existing renderer-cache invalidation path and load on demand after a map load.
+int UI_EFPropTextWidth(const char *text, int style)
+{
+	return EFPause_PropStringWidth(text, style);
+}
+
+void UI_EFDrawPropText(int x, int y, const char *text, int style, int colorIndex)
+{
+	EFPause_DrawPropString(x, y, text, style, colorIndex);
+}
+
 static void EFPause_DrawPic(int x, int y, int w, int h, qhandle_t shader, int colorIndex)
 {
 	ui.R_SetColor(colorTable[colorIndex]);

@@ -830,6 +830,11 @@ qboolean S_EndLoadSound( sfx_t *sfx )
 	alGenBuffers(1, &Buffer);
 
 	// Copy audio data to AL Buffer
+	// NOTE: pass the WHOLE file, header included.  Unlike PC OpenAL (which
+	// takes raw samples and needs data + dataofs), the Xbox AL shim's
+	// alBufferData calls _wavFindDataOffset() on this pointer to locate the
+	// data chunk itself, and REJECTS an ADPCM buffer whose offset is 0.
+	// Passing data + info.dataofs makes every ADPCM sound fail to load.
 	alBufferData(Buffer, info.format, data, 
 		sfx->iSoundLength, info.rate);
 	if (alGetError() != AL_NO_ERROR)

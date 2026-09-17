@@ -1125,6 +1125,8 @@ static int STEFX_HolomatchVM( int command, int arg0 = 0, int arg1 = 0, int arg2 
 	return vmMain(command, arg0, arg1, arg2, 0, 0, 0, 0);
 }
 
+static qboolean s_stefxHolomatchBotFramesEnabled = qfalse;
+
 static void STEFX_HolomatchInit( const char *mapname, const char *spawntarget,
 	int checksum, const char *entstring, int levelTime, int randomSeed, int globalTime,
 	SavedGameJustLoaded_e savedGame, qboolean loadTransition )
@@ -1136,7 +1138,12 @@ static void STEFX_HolomatchInit( const char *mapname, const char *spawntarget,
 	(void)savedGame;
 	(void)loadTransition;
 	s_stefxHolomatchEntityParsePoint = entstring;
+	// Match official G_InitGame: bot cvars and the bot library exist only
+	// when bot_enable was set at initialization. Uninitialized VM cvar
+	// handles must never be updated by BotAIStartFrame.
+	s_stefxHolomatchBotFramesEnabled = Cvar_VariableIntegerValue("bot_enable") ? qtrue : qfalse;
 	STEFX_HolomatchVM(0, levelTime, randomSeed, 0);
+	XBLog_WriteCriticalf("STEFX_HM_BOT_FRAME_GATE: initializedEnabled=%d", s_stefxHolomatchBotFramesEnabled);
 	STEFX_HolomatchSyncAllToMirror();
 	STEFX_HolomatchRefreshExport();
 }
@@ -1144,11 +1151,12 @@ static void STEFX_HolomatchInit( const char *mapname, const char *spawntarget,
 static void STEFX_HolomatchShutdown()
 {
 	STEFX_HolomatchVM(1, 0, 0, 0);
+	s_stefxHolomatchBotFramesEnabled = qfalse;
 }
 
 void STEFX_HolomatchBotFrame( int levelTime )
 {
-	if (!s_stefxHolomatchImport)
+	if (!s_stefxHolomatchImport || !s_stefxHolomatchBotFramesEnabled)
 	{
 		return;
 	}

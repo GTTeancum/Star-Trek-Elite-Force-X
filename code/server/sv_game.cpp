@@ -403,6 +403,7 @@ SV_AdjustAreaPortalState
 ========================
 */
 void SV_AdjustAreaPortalState( gentity_t *ent, qboolean open ) {
+#if !defined(STEFX_ELITE_FORCE_SP) || defined(STEFX_SP_HOSTED_MP)
 	if ( !(ent->contents&CONTENTS_SOLID) )	{
 #ifndef FINAL_BUILD
 //		Com_Printf( "INFO: entity number %d not opaque: not affecting area portal!\n", ent->s.number );
@@ -410,6 +411,10 @@ void SV_AdjustAreaPortalState( gentity_t *ent, qboolean open ) {
 		return;
 	}
 
+#endif
+	// EF func_wall/func_usable clear contents BEFORE opening the portal.
+	// Filtering that open while accepting the later solid close underflows
+	// the shared area reference count. Their explicit transitions are paired.
 	svEntity_t	*svEnt;
 
 	svEnt = SV_SvEntityForGentity( ent );

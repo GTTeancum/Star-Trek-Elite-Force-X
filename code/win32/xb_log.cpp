@@ -812,6 +812,15 @@ __declspec(dllexport) volatile unsigned int g_SPXBCgPhaseCycles[10] = { 0 };
 __declspec(dllexport) volatile unsigned int g_SPXBCgEntTypeCycles[16] = { 0 };
 __declspec(dllexport) volatile unsigned int g_SPXBCgEntTypeCounts[16] = { 0 };
 __declspec(dllexport) volatile unsigned int g_SPXBCgHiddenPlayersSkipped = 0;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+// Sequence, client frame, server time, total/setup/predict/view/entities/tail/
+// draw/scene/HUD milliseconds, main loop, 16 entity cycle counts, 16 entity counts;
+// P1 weapon, P2/refdef, listener, powerup, FX and miscellaneous tail milliseconds.
+__declspec(dllexport) volatile unsigned int g_SPXBCoopCgamePhasesV2[51] = { 0 };
+#endif
+__declspec(dllexport) volatile unsigned int g_SPXBPhysTotal = 0;
+__declspec(dllexport) volatile unsigned int g_SPXBPhysAvail = 0;
+__declspec(dllexport) volatile unsigned int g_SPXBAudioMemUsed = 0;
 __declspec(dllexport) volatile unsigned int g_SPXBPerfEndFrameMsec = 0x11120027;
 __declspec(dllexport) volatile unsigned int g_SPXBPerfRenderTotalMsec = 0x11120030;
 __declspec(dllexport) volatile unsigned int g_SPXBPerfRenderSetupMsec = 0x11120031;
@@ -916,6 +925,18 @@ __declspec(dllexport) volatile unsigned int g_SPXBPerfComEventMsec = 0x11120082;
 __declspec(dllexport) volatile unsigned int g_SPXBPerfComCommandMsec = 0x11120083;
 __declspec(dllexport) volatile unsigned int g_SPXBPerfClientPreambleMsec = 0x11120084;
 __declspec(dllexport) volatile unsigned int g_SPXBPerfClientTailMsec = 0x11120085;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+// Completed-frame snapshot v1; word 0 is published last. Diagnostic readers
+// reject zero/changing serials instead of combining counters from two frames.
+__declspec(dllexport) volatile unsigned int g_SPXBPerfFrameSnapshot[39] = {0};
+// Six draw kinds, eight counters each; production builds omit this storage.
+// HUD / resident world / dynamic world base / world extra pass / model / FX.
+__declspec(dllexport) volatile unsigned int g_SPXBPerfDrawKindsCurrent[48] = {0};
+__declspec(dllexport) volatile unsigned int g_SPXBPerfDrawKindsSnapshot[52] = {0};
+// 256 hashed model/material keys plus explicit overflow; diagnostic schema 2.
+__declspec(dllexport) volatile unsigned int g_SPXBPerfModelDrawsCurrent[2056] = {0};
+__declspec(dllexport) volatile unsigned int g_SPXBPerfModelDrawsSnapshot[2060] = {0};
+#endif
 static unsigned int s_xboxPerfNextSampleMsec = 0;
 
 void XBPerf_BeginFrame(unsigned int realtimeMsec, int gameplayActive)
@@ -932,8 +953,16 @@ void XBPerf_BeginFrame(unsigned int realtimeMsec, int gameplayActive)
         return;
     }
 
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    s_xboxPerfNextSampleMsec = realtimeMsec + 250u;
+#else
     s_xboxPerfNextSampleMsec = realtimeMsec + 5000u;
+#endif
     ++g_SPXBPerfSampleSerial;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    memset((void *)g_SPXBPerfDrawKindsCurrent, 0, sizeof(g_SPXBPerfDrawKindsCurrent));
+    memset((void *)g_SPXBPerfModelDrawsCurrent, 0, sizeof(g_SPXBPerfModelDrawsCurrent));
+#endif
     g_SPXBPerfRenderTotalMsec = 0;
     g_SPXBPerfRenderSetupMsec = 0;
     g_SPXBPerfRenderMarkLeavesMsec = 0;
@@ -1034,6 +1063,62 @@ void XBPerf_EndFrame(void)
     g_SPXBPerfIndexedTex1Calls = g_SPXBPerfIndexedTex1CallsCurrent;
     g_SPXBPerfIndexedReserveDwords = g_SPXBPerfIndexedReserveDwordsCurrent;
     g_SPXBPerfImmediateReserveDwords = g_SPXBPerfImmediateReserveDwordsCurrent;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    g_SPXBPerfFrameSnapshot[0] = 0;
+    g_SPXBPerfFrameSnapshot[1] = 1;
+    g_SPXBPerfFrameSnapshot[2] = g_SPXBMainLoopCount;
+    g_SPXBPerfFrameSnapshot[3] = g_SPXBPerfFrameMsec;
+    g_SPXBPerfFrameSnapshot[4] = g_SPXBPerfServerMsec;
+    g_SPXBPerfFrameSnapshot[5] = g_SPXBPerfClientMsec;
+    g_SPXBPerfFrameSnapshot[6] = g_SPXBPerfGameMsec;
+    g_SPXBPerfFrameSnapshot[7] = g_SPXBPerfFrontendMsec;
+    g_SPXBPerfFrameSnapshot[8] = g_SPXBPerfBackendMsec;
+    g_SPXBPerfFrameSnapshot[9] = g_SPXBPerfAudioMsec;
+    g_SPXBPerfFrameSnapshot[10] = g_SPXBPerfScreenDrawMsec;
+    g_SPXBPerfFrameSnapshot[11] = g_SPXBPerfEndFrameMsec;
+    g_SPXBPerfFrameSnapshot[12] = g_SPXBPerfRenderTotalMsec;
+    g_SPXBPerfFrameSnapshot[13] = g_SPXBPerfBackendDrawSurfsMsec;
+    g_SPXBPerfFrameSnapshot[14] = g_SPXBPerfBackendBatches;
+    g_SPXBPerfFrameSnapshot[15] = g_SPXBPerfBackendVertexes;
+    g_SPXBPerfFrameSnapshot[16] = g_SPXBPerfBackendIndexes;
+    g_SPXBPerfFrameSnapshot[17] = g_SPXBPerfSubmitCalls;
+    g_SPXBPerfFrameSnapshot[18] = g_SPXBPerfDrawCycles;
+    g_SPXBPerfFrameSnapshot[19] = g_SPXBPerfDrawReserveCycles;
+    g_SPXBPerfFrameSnapshot[20] = g_SPXBPerfDrawBeginPushCycles;
+    g_SPXBPerfFrameSnapshot[21] = g_SPXBPerfDrawSetStreamCycles;
+    g_SPXBPerfFrameSnapshot[22] = g_SPXBPerfDrawStateCycles;
+    g_SPXBPerfFrameSnapshot[23] = g_SPXBPerfDrawPackCycles;
+    g_SPXBPerfFrameSnapshot[24] = g_SPXBPerfDrawIndexCycles;
+    g_SPXBPerfFrameSnapshot[25] = g_SPXBPerfDrawSubmitCycles;
+    g_SPXBPerfFrameSnapshot[26] = g_SPXBPerfFinishMsec;
+    g_SPXBPerfFrameSnapshot[27] = g_SPXBPerfPresentMsec;
+    g_SPXBPerfFrameSnapshot[28] = g_SPXBPerfDrawBeginPushMaxCyclesCurrent;
+    g_SPXBPerfFrameSnapshot[29] = g_SPXBPerfDrawBeginPushMaxDwordsCurrent;
+    g_SPXBPerfFrameSnapshot[30] = g_SPXBPerfDrawBeginPushMaxStateCurrent;
+    g_SPXBPerfFrameSnapshot[31] = g_SPXBPerfIndexedOpaqueCallsCurrent;
+    g_SPXBPerfFrameSnapshot[32] = g_SPXBPerfIndexedBlendCallsCurrent;
+    g_SPXBPerfFrameSnapshot[33] = g_SPXBPerfIndexedAlphaTestCallsCurrent;
+    g_SPXBPerfFrameSnapshot[34] = g_SPXBPerfIndexedBlendIndexesCurrent;
+    g_SPXBPerfFrameSnapshot[35] = g_SPXBPerfRenderDrawSurfs;
+    g_SPXBPerfFrameSnapshot[36] = g_SPXBPerfRenderRefEntities;
+    g_SPXBPerfFrameSnapshot[37] = g_SPXBPerfRenderWorldMsec;
+    g_SPXBPerfFrameSnapshot[38] = g_SPXBPerfRenderEntitiesMsec;
+    g_SPXBPerfFrameSnapshot[0] = g_SPXBPerfSampleSerial;
+    g_SPXBPerfDrawKindsSnapshot[0] = 0;
+    g_SPXBPerfDrawKindsSnapshot[1] = 1;
+    g_SPXBPerfDrawKindsSnapshot[2] = g_SPXBMainLoopCount;
+    g_SPXBPerfDrawKindsSnapshot[3] = g_SPXBPerfFrameMsec;
+    for (int kindWord = 0; kindWord < 48; ++kindWord)
+        g_SPXBPerfDrawKindsSnapshot[4 + kindWord] = g_SPXBPerfDrawKindsCurrent[kindWord];
+    g_SPXBPerfDrawKindsSnapshot[0] = g_SPXBPerfSampleSerial;
+    g_SPXBPerfModelDrawsSnapshot[0] = 0;
+    g_SPXBPerfModelDrawsSnapshot[1] = 2;
+    g_SPXBPerfModelDrawsSnapshot[2] = g_SPXBMainLoopCount;
+    g_SPXBPerfModelDrawsSnapshot[3] = g_SPXBPerfFrameMsec;
+    for (unsigned int modelWord = 0; modelWord < 2056; ++modelWord)
+        g_SPXBPerfModelDrawsSnapshot[4 + modelWord] = g_SPXBPerfModelDrawsCurrent[modelWord];
+    g_SPXBPerfModelDrawsSnapshot[0] = g_SPXBPerfSampleSerial;
+#endif
 #if !defined(STEFX_HW_FRAME_DIAGNOSTICS)
     _snprintf(
         profile, sizeof(profile) - 1,
@@ -1157,7 +1242,8 @@ __declspec(dllexport) volatile char g_SPXBProfileMirror[8][1024];
 __declspec(dllexport) volatile unsigned int g_SPXBProfileMirrorIndex;
 __declspec(dllexport) volatile char g_SPXBFrameProfileMirror[32][1024];
 __declspec(dllexport) volatile unsigned int g_SPXBFrameProfileMirrorIndex;
-__declspec(dllexport) volatile char g_SPXBFpsProfileMirror[64][256];
+// Keep the trailing gameplay/excludedChecks fields even as counters grow.
+__declspec(dllexport) volatile char g_SPXBFpsProfileMirror[64][576];
 __declspec(dllexport) volatile unsigned int g_SPXBFpsProfileMirrorIndex;
 __declspec(dllexport) volatile char g_SPXBCmdLast[128];
 __declspec(dllexport) volatile char g_SPXBCmdTextLast[128];
@@ -1256,6 +1342,9 @@ static int xbl_IsHighFrequencyDrawNoise(const char *msg)
 
 static int xbl_ShouldDropVerbose(const char *msg)
 {
+    // The opt-in input replay emits only bounded row transitions. Retain them
+    // through both the format filter and this formatted-record filter.
+    if (msg && strstr(msg, "STEFX_INPUT_REPLAY:")) return 0;
     int budgeted;
     static int s_playerBudget = 48;
     static int s_frameBudget = 192;
@@ -2131,6 +2220,7 @@ static int xbl_ShouldDropVerbose(const char *msg)
 
 static int xbl_FormatMayBeCritical(const char *fmt)
 {
+    if (fmt && strstr(fmt, "STEFX_INPUT_REPLAY:")) return 1;
     if (!fmt) return 0;
     if (!g_verboseLog) {
         return strstr(fmt, "STEFX_HW_CHECKPOINT") ||
@@ -2356,6 +2446,7 @@ static int xbl_IsCriticalLogLine(const char *msg)
 {
     if (!msg) return 0;
     return strstr(msg, "STEFX_HW_CHECKPOINT") ||
+        strstr(msg, "STEFX_INPUT_REPLAY:") ||
         strstr(msg, "FRAME_HEARTBEAT") ||
         strstr(msg, "STEFX_HW_FRAME_PROFILE") ||
         strstr(msg, "STEFX_HW_RENDER_SAMPLE") ||

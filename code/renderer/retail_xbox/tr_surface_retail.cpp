@@ -373,6 +373,10 @@ void RB_SurfaceTriangles( srfTriangles_t *srf ) {
 
 	RB_CHECKOVERFLOW( srf->numVerts, srf->numIndexes );
 
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+	STEFX_WorldVerticesSurface(srf, srf->numVerts);
+#endif
+
 	for ( i = 0 ; i < srf->numIndexes ; i += 3 ) {
 		tess.indexes[ tess.numIndexes + i + 0 ] = tess.numVertexes + srf->indexes[ i + 0 ];
 		tess.indexes[ tess.numIndexes + i + 1 ] = tess.numVertexes + srf->indexes[ i + 1 ];
@@ -723,6 +727,7 @@ static void DoLine_Oriented( const vec3_t start, const vec3_t end, const vec3_t 
 	float		spanWidth2;
 	int			vbase;
 
+	RB_CHECKOVERFLOW(4, 6);
 	vbase = tess.numVertexes;
 
 	spanWidth2 = -spanWidth;
@@ -1386,6 +1391,9 @@ void RB_SurfaceMesh(md3Surface_t *surface) {
 
 	RB_CHECKOVERFLOW( surface->numVerts, surface->numTriangles*3 );
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	STEFX_CoopModelSurface(surface);
+#endif
 	LerpMeshVertexes (surface, backlerp);
 
 	triangles = (int *) ((byte *)surface + surface->ofsTriangles);
@@ -1435,6 +1443,10 @@ void RB_SurfaceFace( srfSurfaceFace_t *surf ) {
 	int			dlightBits;
 
 	RB_CHECKOVERFLOW( surf->numPoints, surf->numIndices );
+
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+	STEFX_WorldVerticesSurface(surf, surf->numPoints);
+#endif
 
 	dlightBits = surf->dlightBits;
 	tess.dlightBits |= dlightBits;
@@ -1949,6 +1961,10 @@ static bool RB_TestZFlare( vec3_t point) {
 	UINT result;
 	HRESULT hr;
 	DWORD zwrite, colorwrite;
+	static int firstQueryLogBudget = 8;
+	static int failedQueryLogBudget = 8;
+	const bool firstQuery = (surf->visible == -1);
+	const bool traceQuery = firstQuery && firstQueryLogBudget > 0;
 
 	// Get the visibility test from the last frame
 	if(surf->visible == -1)
@@ -1973,7 +1989,24 @@ static bool RB_TestZFlare( vec3_t point) {
 	glw_state->device->Begin(D3DPT_POINTLIST);
 	glw_state->device->SetVertexData4f(D3DVSDE_VERTEX, point[0], point[1], point[2], 1.0f);
 	glw_state->device->End();
-	glw_state->device->EndVisibilityTest((int)surf->number);
+	if (traceQuery)
+	{
+		--firstQueryLogBudget;
+		XBLog_WriteCriticalf("STEFX_FLARE_QUERY: submit begin id=%u", (unsigned int)surf->number);
+	}
+	const HRESULT submitResult = glw_state->device->EndVisibilityTest((int)surf->number);
+	if (FAILED(submitResult))
+	{
+		// XDK 5558 can fail to allocate query storage. GetVisibilityTestResult
+		// assumes that storage exists, so retry submission before any readback.
+		surf->visible = -1;
+	}
+	if (traceQuery || (FAILED(submitResult) && failedQueryLogBudget > 0))
+	{
+		if (FAILED(submitResult)) --failedQueryLogBudget;
+		XBLog_WriteCriticalf("STEFX_FLARE_QUERY: submit end id=%u hr=0x%08x retry=%d",
+			(unsigned int)surf->number, (unsigned int)submitResult, FAILED(submitResult) ? 1 : 0);
+	}
 
 	glw_state->device->SetRenderState(D3DRS_ZWRITEENABLE, zwrite);
 	glw_state->device->SetRenderState(D3DRS_COLORWRITEENABLE, colorwrite);

@@ -1001,6 +1001,11 @@ void Cvar_Init (void) {
 	cvar_cheats = Cvar_Get("helpUsObi", "0", CVAR_SYSTEMINFO );
 #endif
 
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	// Persist tour semantics through ordinary manual saves and hub transitions.
+	Cvar_Get("cg_virtualVoyager", "0", CVAR_NORESTART | CVAR_SAVEGAME);
+#endif
+
 	Cmd_AddCommand ("toggle", Cvar_Toggle_f);
 	Cmd_AddCommand ("set", Cvar_Set_f);
 	Cmd_AddCommand ("sets", Cvar_SetS_f);

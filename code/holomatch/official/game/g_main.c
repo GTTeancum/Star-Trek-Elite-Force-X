@@ -16,6 +16,10 @@ extern qboolean BG_BorgTransporting( playerState_t *ps );
 extern void BG_LoadItemNames(void);
 
 level_locals_t	level;
+#if defined(STEFX_SP_HOSTED_MP)
+static int s_stefxInitRestartProof[5];
+static int s_stefxRestartTransition[4] = {-1, -1, -1, -1};
+#endif
 extern char	races[256];	//this is evil!
 extern qboolean levelExiting;
 extern int noJoinLimit;
@@ -202,7 +206,28 @@ This is the only way control passes into the module.
 This MUST be the very first function compiled into the .q3vm file
 ================
 */
+#if defined(STEFX_SP_HOSTED_MP)
+static int STEFX_GameDispatch( int command, int arg0, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6 );
 int vmMain( int command, int arg0, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6 ) {
+	int before = level.restarted;
+	int result;
+	if (command == GAME_INIT) s_stefxRestartTransition[0] = -1;
+	result = STEFX_GameDispatch(command, arg0, arg1, arg2, arg3, arg4, arg5, arg6);
+	if (command != GAME_INIT && s_stefxRestartTransition[0] == -1 &&
+		(before || level.restarted)) {
+		s_stefxRestartTransition[0] = command;
+		s_stefxRestartTransition[1] = arg0;
+		s_stefxRestartTransition[2] = before;
+		s_stefxRestartTransition[3] = level.restarted;
+		XBLog_WriteCriticalf("STEFX_HM_RESTART_TRANSITION: command=%d arg0=%d before=%d after=%d time=%d frame=%d",
+			command, arg0, before, level.restarted, level.time, level.framenum);
+	}
+	return result;
+}
+static int STEFX_GameDispatch( int command, int arg0, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6 ) {
+#else
+int vmMain( int command, int arg0, int arg1, int arg2, int arg3, int arg4, int arg5, int arg6 ) {
+#endif
 	switch ( command ) {
 	case GAME_INIT:
 		G_InitGame( arg0, arg1, arg2 );
@@ -498,6 +523,10 @@ G_InitGame
 extern int lastKillTime[];
 void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	int					i;
+#if defined(STEFX_SP_HOSTED_MP)
+	for (i = 0; i < 5; ++i) s_stefxInitRestartProof[i] = -1;
+	s_stefxInitRestartProof[0] = restart;
+#endif
 	STEFX_GAME_TRACE("STEFX_HM_SP: official G_InitGame entered");
 
 	G_Printf ("------- Game Initialization -------\n");
@@ -539,6 +568,9 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	level.time = levelTime;
 	level.startTime = levelTime;
 	level.restarted = restart;
+#if defined(STEFX_SP_HOSTED_MP)
+	s_stefxInitRestartProof[1] = level.restarted;
+#endif
 
 	level.snd_fry = G_SoundIndex("sound/player/fry.wav");	// FIXME standing in lava / slime
 
@@ -593,6 +625,9 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	trap_LocateGameData( level.gentities, level.num_entities, sizeof( gentity_t ), 
 		&level.clients[0].ps, sizeof( level.clients[0] ) );
 	STEFX_GAME_TRACE("STEFX_HM_SP: official G_InitGame after locate data");
+#if defined(STEFX_SP_HOSTED_MP)
+	s_stefxInitRestartProof[2] = level.restarted;
+#endif
 
 	// reserve some spots for dead player bodies
 	InitBodyQue();
@@ -603,6 +638,9 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	STEFX_GAME_TRACE("STEFX_HM_SP: official G_InitGame before spawn entities");
 	G_SpawnEntitiesFromString();
 	STEFX_GAME_TRACE("STEFX_HM_SP: official G_InitGame after spawn entities");
+#if defined(STEFX_SP_HOSTED_MP)
+	s_stefxInitRestartProof[3] = level.restarted;
+#endif
 
 	// general initialization
 	G_FindTeams();
@@ -634,6 +672,9 @@ void G_InitGame( int levelTime, int randomSeed, int restart ) {
 	STEFX_GAME_TRACE("STEFX_HM_SP: official G_InitGame before return");
 	
 	levelExiting = qfalse;
+#if defined(STEFX_SP_HOSTED_MP)
+	s_stefxInitRestartProof[4] = level.restarted;
+#endif
 }
 
 extern void G_RestoreClientInitialStatus( gentity_t *ent );
@@ -1807,6 +1848,31 @@ void G_RunFrame( int levelTime ) {
 	gentity_t	*ent;
 	int			msec;
 int start, end;
+
+#if defined(STEFX_SP_HOSTED_MP)
+	{
+		static int nextProofTime = 0;
+		static int proofBudget = 64;
+		if (proofBudget > 0 && levelTime >= nextProofTime) {
+			int slot, live = 0, events = 0, expired = 0;
+			for (slot = MAX_CLIENTS; slot < level.num_entities; ++slot) {
+				gentity_t *probe = &g_entities[slot];
+				if (!probe->inuse) continue;
+				++live;
+				if (probe->freeAfterEvent) {
+					++events;
+					if (level.time - probe->eventTime > EVENT_VALID_MSEC) ++expired;
+				}
+			}
+			XBLog_WriteCriticalf("STEFX_HM_ENTITY_LIFETIME: incoming=%d time=%d frame=%d restarted=%d slots=%d live=%d events=%d expired=%d initRestart=%d/%d/%d/%d/%d transition=%d/%d/%d/%d",
+				levelTime, level.time, level.framenum, level.restarted, level.num_entities, live, events, expired,
+				s_stefxInitRestartProof[0], s_stefxInitRestartProof[1], s_stefxInitRestartProof[2], s_stefxInitRestartProof[3], s_stefxInitRestartProof[4],
+				s_stefxRestartTransition[0], s_stefxRestartTransition[1], s_stefxRestartTransition[2], s_stefxRestartTransition[3]);
+			nextProofTime = levelTime + 5000;
+			--proofBudget;
+		}
+	}
+#endif
 
 	// if we are waiting for the level to restart, do nothing
 	if ( level.restarted ) {

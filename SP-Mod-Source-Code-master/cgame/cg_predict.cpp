@@ -10,6 +10,40 @@ static	pmove_t		cg_pmove;
 static	int			cg_numSolidEntities;
 static	centity_t	*cg_solidEntities[MAX_ENTITIES_IN_SNAPSHOT];
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#include "../../code/win32/xb_perf.h"
+#include "stefx_fx_trace_bounds.h"
+#define STEFX_COOP_FX_TRACE 1
+extern void CM_STEFX_CoopModelBounds(clipHandle_t model, vec3_t mins, vec3_t maxs);
+extern "C" void XBLog_WriteCritical(const char *text);
+// mode, queries, entity visits, mask rejects, bounds rejects, verified rejects,
+// mismatches, transformed calls, world cycles, entity cycles, bound fills, fallback.
+extern "C" volatile unsigned int g_SPXBCoopFxTrace[12] = {0};
+static vmCvar_t s_fxTraceMode, s_fxTraceGameMode;
+static bool s_fxTraceRegistered, s_fxTraceFailed;
+static int s_fxTraceFrame = -1;
+struct stefxFxBounds_t { bool valid, canReject; clipHandle_t model; vec3_t origin, mins, maxs; };
+// One entry per solid-list slot avoids collision churn between model handles.
+// 256 * 44 bytes, no allocation; reset with the solid list on every frame/map.
+static stefxFxBounds_t s_fxTraceBounds[MAX_ENTITIES_IN_SNAPSHOT];
+static int STEFX_FxTraceMode(void) {
+	if (!cg_stefxSplitScreen.integer || cg_stefxSplitScreenPlayers.integer < 2) return 0;
+	if (!s_fxTraceRegistered) {
+		cgi_Cvar_Register(&s_fxTraceMode, "cg_efCoopFxTrace", "0", 0);
+		cgi_Cvar_Register(&s_fxTraceGameMode, "stefx_splitScreenMode", "coop", 0);
+		s_fxTraceRegistered = true;
+	}
+	if (s_fxTraceFrame != cg.clientFrame) {
+		s_fxTraceFrame = cg.clientFrame;
+		cgi_Cvar_Update(&s_fxTraceMode); cgi_Cvar_Update(&s_fxTraceGameMode);
+	}
+	const int mode = !s_fxTraceFailed && !Q_stricmp(s_fxTraceGameMode.string,"coop") &&
+		(s_fxTraceMode.integer == 1 || s_fxTraceMode.integer == 2) ? s_fxTraceMode.integer : 0;
+	g_SPXBCoopFxTrace[0] = mode;
+	return mode;
+}
+#endif
+
 /*
 ====================
 CG_BuildSolidList
@@ -25,6 +59,11 @@ void CG_BuildSolidList( void )
 	centity_t	*cent;
 
 	cg_numSolidEntities = 0;
+#if STEFX_COOP_FX_TRACE
+	// Handles can be reused across maps. No cached bounds survive a new solid list.
+	memset(s_fxTraceBounds, 0, sizeof(s_fxTraceBounds));
+	s_fxTraceFrame = -1;
+#endif
 
 	if(!cg.snap)
 	{
@@ -52,8 +91,8 @@ CG_ClipMoveToEntities
 
 ====================
 */
-void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end,
-							int skipNumber, int mask, trace_t *tr ) {
+static void CG_ClipMoveToEntitiesInternal ( const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end,
+							int skipNumber, int mask, trace_t *tr, int fxMode ) {
 	int			i, x, zd, zu;
 	trace_t		trace;
 	entityState_t	*ent;
@@ -61,6 +100,10 @@ void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const vec3_t
 	vec3_t		bmins, bmaxs;
 	vec3_t		origin, angles;
 	centity_t	*cent;
+#if STEFX_COOP_FX_TRACE
+	vec3_t queryMins, queryMaxs;
+	const bool queryBounds = fxMode && STEFX_FxSweptBounds(start,end,mins,maxs,queryMins,queryMaxs);
+#endif
 
 	for ( i = 0 ; i < cg_numSolidEntities ; i++ ) {
 		cent = cg_solidEntities[ i ];
@@ -76,12 +119,43 @@ void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const vec3_t
 		if ( ent->eType == ET_TELEPORT_TRIGGER ) {
 			continue;
 		}
+#if STEFX_COOP_FX_TRACE
+		bool reject = false;
+		if (fxMode) {
+			++g_SPXBCoopFxTrace[2];
+			// CM_TempBoxModel always uses CONTENTS_BODY in this engine. Spark
+			// traces asking only for CONTENTS_SOLID cannot hit these entities.
+			if (ent->solid != SOLID_BMODEL && !(mask & CONTENTS_BODY)) {
+				reject = true; ++g_SPXBCoopFxTrace[3];
+				if (fxMode == 1) continue;
+			}
+		}
+#endif
 
 		if ( ent->solid == SOLID_BMODEL ) {
 			// special value for bmodel
 			cmodel = cgi_CM_InlineModel( ent->modelindex );
 			VectorCopy( cent->lerpAngles, angles );
 			EvaluateTrajectory( &cent->currentState.pos, cg.snap->serverTime, origin );
+#if STEFX_COOP_FX_TRACE
+			// Rotated brush models retain the original path: their transformed
+			// trace hull is not covered by this axis-aligned broad phase.
+			if (fxMode && queryBounds && cmodel > 0 && angles[0]==0 && angles[1]==0 && angles[2]==0) {
+				stefxFxBounds_t *b=&s_fxTraceBounds[i];
+				if (!b->valid || b->model != cmodel || origin[0]!=b->origin[0] ||
+					origin[1]!=b->origin[1] || origin[2]!=b->origin[2]) {
+					vec3_t localMins,localMaxs;
+					CM_STEFX_CoopModelBounds(cmodel,localMins,localMaxs);
+					b->canReject=STEFX_FxWorldBounds(origin,localMins,localMaxs,b->mins,b->maxs);
+					VectorCopy(origin,b->origin);
+					b->valid=true; b->model=cmodel; ++g_SPXBCoopFxTrace[10];
+				}
+				if (b->canReject && STEFX_FxWorldBoundsDisjoint(queryMins,queryMaxs,b->mins,b->maxs)) {
+					reject=true; ++g_SPXBCoopFxTrace[4];
+					if (fxMode == 1) continue;
+				}
+			}
+#endif
 		} else {
 			// encoded bbox
 			x = (ent->solid & 255);
@@ -99,8 +173,21 @@ void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const vec3_t
 		}
 
 
+#if STEFX_COOP_FX_TRACE
+		if (fxMode) ++g_SPXBCoopFxTrace[7];
+#endif
 		cgi_CM_TransformedBoxTrace ( &trace, start, end,
 			mins, maxs, cmodel,  mask, origin, angles);
+#if STEFX_COOP_FX_TRACE
+		if (fxMode == 2 && reject) {
+			++g_SPXBCoopFxTrace[5];
+			if (trace.allsolid || trace.fraction < tr->fraction || (trace.startsolid && !tr->startsolid)) {
+				++g_SPXBCoopFxTrace[6]; s_fxTraceFailed=true; fxMode=0;
+				g_SPXBCoopFxTrace[0]=0;
+				XBLog_WriteCritical("STEFX_COOP_FX_TRACE: rejected collider affected trace; disabled optimization");
+			}
+		}
+#endif
 
 		if (trace.allsolid || trace.fraction < tr->fraction) {
 			trace.entityNum = ent->number;
@@ -112,6 +199,11 @@ void CG_ClipMoveToEntities ( const vec3_t start, const vec3_t mins, const vec3_t
 			return;
 		}
 	}
+}
+
+void CG_ClipMoveToEntities(const vec3_t start, const vec3_t mins, const vec3_t maxs,
+	const vec3_t end, int skipNumber, int mask, trace_t *tr) {
+	CG_ClipMoveToEntitiesInternal(start,mins,maxs,end,skipNumber,mask,tr,0);
 }
 
 /*
@@ -130,6 +222,26 @@ void	CG_Trace( trace_t *result, const vec3_t start, const vec3_t mins, const vec
 
 	*result = t;
 }
+
+#if STEFX_COOP_FX_TRACE
+// Only effect-particle physics calls this entry point. Movement, weapon hit
+// tests and server simulation continue to use their original collision paths.
+void CG_STEFX_FxTrace(trace_t *result, const vec3_t start, const vec3_t mins,
+	const vec3_t maxs, const vec3_t end, int skipNumber, int mask) {
+	const int mode=STEFX_FxTraceMode();
+	if (!mode) { CG_Trace(result,start,mins,maxs,end,skipNumber,mask); return; }
+	++g_SPXBCoopFxTrace[1];
+	trace_t t;
+	unsigned __int64 stamp=STEFX_XboxReadTsc();
+	cgi_CM_BoxTrace(&t,start,end,mins,maxs,0,mask);
+	g_SPXBCoopFxTrace[8]+=STEFX_XboxElapsedCycles(stamp);
+	t.entityNum=t.fraction != 1.0 ? ENTITYNUM_WORLD : ENTITYNUM_NONE;
+	stamp=STEFX_XboxReadTsc();
+	CG_ClipMoveToEntitiesInternal(start,mins,maxs,end,skipNumber,mask,&t,mode);
+	g_SPXBCoopFxTrace[9]+=STEFX_XboxElapsedCycles(stamp);
+	*result=t;
+}
+#endif
 
 /*
 ================
@@ -492,5 +604,3 @@ void CG_PredictPlayerState( void ) {
 	// fire events and other transition triggered things
 	CG_TransitionPlayerState( &cg.predicted_player_state, &oldPlayerState );
 }
-
-

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("sp", "spmp", "mp", "all")]
     [string]$Target,
@@ -19,6 +19,7 @@ Set-StrictMode -Version 2.0
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $repoReleaseDir = Join-Path $repoRoot "build\release"
+$binkLibDir = Join-Path (Split-Path (Split-Path $repoRoot -Parent) -Parent) "RM4+JadeSrc\Libraries\GX8\bink"
 $xdkRoot = "C:\XDK_5558\XDK"
 $vc71Dir = Join-Path $xdkRoot "xbox\bin\vc71"
 $xdkBin = Join-Path $xdkRoot "xbox\bin"
@@ -49,6 +50,13 @@ foreach ($tool in $requiredTools) {
 # Use the clean XDK 5558 compiler, headers, libraries, shader assembler, and
 # image tools as one coherent SDK. The local C:\XDK tree is a modified 5849
 # installation and must not participate in native renderer builds.
+
+# Keep the licensed DSP payload local; generate the byte-identical include
+# from the same installed SDK instead of distributing it in the repository.
+& $pythonExe (Join-Path $repoRoot "scripts\generate_dsp_header.py") --xdk $xdkRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to prepare the local XDK 5558 DSP image header"
+}
 
 $vcIncludeDirs = @(
     (Join-Path $repoRoot "code\win32"),
@@ -1401,7 +1409,7 @@ function Build-Project {
             # All Xbox system libraries, including dmusic.lib, are present
             # in the clean XDK 5558 tree.  Do not allow the locally modified
             # 5849 tree to participate in native renderer links.
-            AdditionalLibraryDirectories = "$repoReleaseDir;.\Release;C:\XDK_5558\XDK\xbox\lib;Z:\Programming\RM4+JadeSrc\Libraries\GX8\bink"
+            AdditionalLibraryDirectories = "$repoReleaseDir;.\Release;C:\XDK_5558\XDK\xbox\lib;$binkLibDir"
             IgnoreDefaultLibraryNames = "msvcrt.lib;msvcrtd.lib;libcmt.lib;libcmtd.lib;LIBCMTD.lib"
             GenerateDebugInformation = "true"
             OptimizeReferences = "2"
@@ -2173,7 +2181,7 @@ function Copy-EFDataOverlay {
     } elseif (-not (Test-Path -LiteralPath $sourceUi -PathType Container)) {
         Write-Warning "Missing EF UI script source: $sourceUi"
     } else {
-        $sourceUiFull = (Resolve-Path -LiteralPath $sourceUi).Path
+        $sourceUiFull = (Resolve-Path -LiteralPath $sourceUi).ProviderPath
         $copiedUiScripts = 0
         $removedDeprecatedMpUiScripts = 0
         foreach ($stalePath in @(
@@ -2214,7 +2222,7 @@ function Copy-EFDataOverlay {
         $removedMenuAssets = 0
         if ((Test-Path -LiteralPath $sourceMenu -PathType Container) -and
             (Test-Path -LiteralPath $destMenu -PathType Container)) {
-            $sourceMenuFull = (Resolve-Path -LiteralPath $sourceMenu).Path
+            $sourceMenuFull = (Resolve-Path -LiteralPath $sourceMenu).ProviderPath
             Get-ChildItem -LiteralPath $sourceMenu -Recurse -File | Where-Object {
                 $_.Extension -iin @(".tga", ".jpg", ".jpeg", ".png") -and $_.Name -ine "vssver.scc"
             } | ForEach-Object {
@@ -2229,7 +2237,7 @@ function Copy-EFDataOverlay {
 
         Write-Host "Skipped repository base menu overlay for Holomatch MP; removed stale assets: $removedMenuAssets"
     } elseif (Test-Path -LiteralPath $sourceMenu -PathType Container) {
-        $sourceMenuFull = (Resolve-Path -LiteralPath $sourceMenu).Path
+        $sourceMenuFull = (Resolve-Path -LiteralPath $sourceMenu).ProviderPath
         $copiedMenuAssets = 0
         Get-ChildItem -LiteralPath $sourceMenu -Recurse -File | Where-Object {
             $_.Extension -iin @(".tga", ".jpg", ".jpeg", ".png") -and $_.Name -ine "vssver.scc"
@@ -2596,6 +2604,10 @@ function Update-EFConsoleAssetLists {
     Copy-EFDataOverlay -BaseEfDir $baseEfDir
     Copy-EFConfigOverlay -BaseEfDir $baseEfDir
     Remove-EFLegacyGobArtifacts -BaseEfDir $baseEfDir
+    Invoke-External -Exe $pythonExe -Arguments @(
+        (Join-Path $repoRoot "scripts\extract_virtual_voyager_sources.py"),
+        "--base-dir", $baseEfDir
+    ) -WorkingDirectory $repoRoot
     # Single-player closeups and facial animation regularly fill the screen.
     # Keep the source's 128-pixel character detail there; Holomatch retains
     # the 64-pixel cap below for its three/four simultaneous viewports.
@@ -2729,9 +2741,9 @@ function Remove-EFHolomatchLooseTextureFallbacks {
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-    $stageRoot = (Resolve-Path -LiteralPath $StageBaseEf).Path
+    $stageRoot = (Resolve-Path -LiteralPath $StageBaseEf).ProviderPath
     $stageRootWithSlash = $stageRoot.TrimEnd('\') + '\'
-    $pk3Resolved = (Resolve-Path -LiteralPath $Pk3Path).Path
+    $pk3Resolved = (Resolve-Path -LiteralPath $Pk3Path).ProviderPath
     $imageExts = @(".tga", ".jpg", ".jpeg", ".png")
     $fallbacks = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 

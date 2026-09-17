@@ -9,6 +9,7 @@
 #include "../qcommon/sstring.h"
 #ifdef _XBOX
 #include "../win32/xb_log.h"
+#include "mdr_frame_codec.h"
 #endif
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
@@ -81,8 +82,10 @@ struct CachedEndianedModelBinary_s
 	int		iAllocSize;		// may be useful for mem-query, but I don't actually need it
 #ifdef _XBOX
 	qboolean bHeapAllocated;
+	qboolean bFileBuffer; // Adopted FS buffer has its own allocation header.
 #if defined(STEFX_ELITE_FORCE_SP)
 	qboolean bMdrCompacted;
+	qboolean bMdrNeedsRegistration;
 	const byte *pMdrFrameBase;
 	int iMdrFrameBaseCount;
 	int iMdrFrameSize;
@@ -102,8 +105,10 @@ struct CachedEndianedModelBinary_s
 		iAllocSize = 0;
 #ifdef _XBOX
 		bHeapAllocated = qfalse;
+		bFileBuffer = qfalse;
 #if defined(STEFX_ELITE_FORCE_SP)
 		bMdrCompacted = qfalse;
+		bMdrNeedsRegistration = qfalse;
 		pMdrFrameBase = NULL;
 		iMdrFrameBaseCount = 0;
 		iMdrFrameSize = 0;
@@ -121,6 +126,7 @@ typedef map <sstring_t,CachedEndianedModelBinary_t>	CachedModels_t;
 
 #ifdef _XBOX
 #if defined(STEFX_ELITE_FORCE_SP)
+static qboolean STEFX_TryStreamMdrFile(const char *name, void **buffer, qboolean *cached);
 static void STEFX_ClearMdrFrameCache(void);
 static void STEFX_FreeMdrFrameBases(void);
 static void STEFX_ResetMdrModelRegistry(void);
@@ -132,12 +138,15 @@ static void RE_RegisterModels_FreeDiskImage(CachedEndianedModelBinary_t &cachedM
 		return;
 	}
 
-	if (cachedModel.bHeapAllocated)
+	if (cachedModel.bFileBuffer)
 	{
-		if (!FS_STEFX_FreeHeapFileBuffer(cachedModel.pModelDiskImage))
-		{
-			HeapFree(GetProcessHeap(), 0, cachedModel.pModelDiskImage);
-		}
+		// Only adopted FS buffers carry the header read by this function.
+		// Probing before a plain HeapAlloc block can cross an unmapped page.
+		FS_STEFX_FreeHeapFileBuffer(cachedModel.pModelDiskImage);
+	}
+	else if (cachedModel.bHeapAllocated)
+	{
+		HeapFree(GetProcessHeap(), 0, cachedModel.pModelDiskImage);
 	}
 	else
 	{
@@ -146,8 +155,10 @@ static void RE_RegisterModels_FreeDiskImage(CachedEndianedModelBinary_t &cachedM
 
 	cachedModel.pModelDiskImage = NULL;
 	cachedModel.bHeapAllocated = qfalse;
+	cachedModel.bFileBuffer = qfalse;
 #if defined(STEFX_ELITE_FORCE_SP)
 	cachedModel.bMdrCompacted = qfalse;
+	cachedModel.bMdrNeedsRegistration = qfalse;
 	cachedModel.pMdrFrameBase = NULL;
 	cachedModel.iMdrFrameBaseCount = 0;
 	cachedModel.iMdrFrameSize = 0;
@@ -273,7 +284,11 @@ qboolean RE_RegisterModels_GetDiskFile( const char *psModelFileName, void **ppvB
 			*ppvBuffer = NULL;
 		}
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-		STEFX_RENDER_MODEL_PHASE( 0x44 );
+			STEFX_RENDER_MODEL_PHASE( 0x44 );
+#endif
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+		if (ppvBuffer && STEFX_TryStreamMdrFile(sModelName, ppvBuffer, pqbAlreadyCached))
+			return qtrue;
 #endif
 		len = FS_ReadFile( psModelFileName, ppvBuffer );
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
@@ -392,6 +407,7 @@ void *RE_RegisterModels_Malloc(int iSize, void *pvDiskBufferIfJustLoaded, const 
 					!stricmp(&sModelName[nameLen - 4], ".mdr"))
 				{
 					ModelBin.bHeapAllocated = FS_STEFX_IsHeapFileBuffer(pvDiskBufferIfJustLoaded);
+					ModelBin.bFileBuffer = ModelBin.bHeapAllocated;
 #ifdef _XBOX
 					if (strstr(sModelName, "models/players/"))
 					{
@@ -472,7 +488,14 @@ void *RE_RegisterModels_Malloc(int iSize, void *pvDiskBufferIfJustLoaded, const 
 				*piShaderPokePtr = sh->index;
 			}
 		}
-		*pqbAlreadyFound = qtrue;	// tell caller not to re-Endian or re-Shader this binary		
+		*pqbAlreadyFound = qtrue;	// tell caller not to re-Endian or re-Shader this binary
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+		if (ModelBin.bMdrNeedsRegistration)
+		{
+			*pqbAlreadyFound = qfalse;
+			ModelBin.bMdrNeedsRegistration = qfalse;
+		}
+#endif
 	}
 
 	ModelBin.iLastLevelUsedOn = RE_RegisterMedia_GetLevel();
@@ -966,11 +989,18 @@ static qboolean STEFX_IsDefaultPlayerMdrFallbackName(const char *name)
 
 #define STEFX_BORG_MDR_FRAME_GROUPS 5
 #define STEFX_BORG_MDR_FRAME_CACHE_SLOTS 32
-#define STEFX_BORG_MDR_MAX_FRAME_BYTES 640
+#define STEFX_BORG_MDR_MAX_FRAME_BYTES 1024
+#define STEFX_MDR_BLOCK_FRAMES 16
+static byte s_stefxMdrBlockRaw[STEFX_MDR_BLOCK_FRAMES * STEFX_BORG_MDR_MAX_FRAME_BYTES];
+static byte s_stefxMdrBlockPacked[sizeof(s_stefxMdrBlockRaw) * 2 + 32];
+static int s_stefxMdrBlockDictionary[4096];
+static const md4Header_t *s_stefxMdrBlockHeader;
+static int s_stefxMdrBlockIndex = -1;
 
 typedef struct
 {
 	byte *frames;
+	qboolean heapAllocated;
 	int frameCount;
 	int frameSize;
 	int numBones;
@@ -987,13 +1017,47 @@ typedef struct
 static stefxBorgMdrFrameBase_t s_stefxBorgMdrFrameBases[STEFX_BORG_MDR_FRAME_GROUPS];
 static stefxBorgMdrFrameCache_t s_stefxBorgMdrFrameCache[STEFX_BORG_MDR_FRAME_CACHE_SLOTS];
 static int s_stefxBorgMdrFrameCacheReplace;
+#if defined(STEFX_ELITE_FORCE_SP)
+static int s_stefxMdrFrameLastReturned = -1;
+extern "C" volatile unsigned int g_SPXBMdrFramePairProtected = 0;
+// STEFX_MDR_FRAME_REPLACEMENT_BEGIN
+static int STEFX_MdrFrameReplacement(int next, int lastReturned)
+{
+	// RB_SurfaceAnim keeps the current frame pointer while fetching the old
+	// frame. A hit on the FIFO eviction slot must survive that following miss.
+	return next == lastReturned ? (next + 1) % STEFX_BORG_MDR_FRAME_CACHE_SLOTS : next;
+}
+// STEFX_MDR_FRAME_REPLACEMENT_END
+#endif
 static model_t *s_stefxBorgMdrModels[MAX_MOD_KNOWN];
 static int s_stefxBorgMdrModelCount;
 
+extern void *Z_TryMalloc(int size, memtag_t tag, int alignment);
+static byte *STEFX_AllocMdrStorage(int bytes, qboolean *heapAllocated)
+{
+	byte *memory = (byte *)HeapAlloc(GetProcessHeap(), 0, bytes);
+	*heapAllocated = memory ? qtrue : qfalse;
+	if (!memory) memory = (byte *)Z_TryMalloc(bytes, TAG_MODEL_MD3, 32);
+	XBLog_WriteCriticalf("STEFX_MDR_STORAGE: bytes=%d heap=%d allocated=%d", bytes, *heapAllocated, memory ? 1 : 0);
+	return memory;
+}
+
+static void STEFX_FreeMdrStorage(byte *memory, qboolean heapAllocated)
+{
+	if (!memory) return;
+	if (heapAllocated) HeapFree(GetProcessHeap(), 0, memory);
+	else Z_Free(memory);
+}
+
 static void STEFX_ClearMdrFrameCache(void)
 {
+	s_stefxMdrBlockHeader = NULL;
+	s_stefxMdrBlockIndex = -1;
 	memset(s_stefxBorgMdrFrameCache, 0, sizeof(s_stefxBorgMdrFrameCache));
 	s_stefxBorgMdrFrameCacheReplace = 0;
+#if defined(STEFX_ELITE_FORCE_SP)
+	s_stefxMdrFrameLastReturned = -1;
+#endif
 }
 
 static void STEFX_ResetMdrModelRegistry(void)
@@ -1010,7 +1074,8 @@ static void STEFX_FreeMdrFrameBases(void)
 	{
 		if (s_stefxBorgMdrFrameBases[i].frames)
 		{
-			HeapFree(GetProcessHeap(), 0, s_stefxBorgMdrFrameBases[i].frames);
+			STEFX_FreeMdrStorage(s_stefxBorgMdrFrameBases[i].frames,
+				s_stefxBorgMdrFrameBases[i].heapAllocated);
 		}
 		memset(&s_stefxBorgMdrFrameBases[i], 0, sizeof(s_stefxBorgMdrFrameBases[i]));
 	}
@@ -1220,15 +1285,28 @@ const void *R_STEFX_GetMDRFrame(const md4Header_t *header, int frame)
 		if (s_stefxBorgMdrFrameCache[i].header == header &&
 			s_stefxBorgMdrFrameCache[i].frame == frame)
 		{
+#if defined(STEFX_ELITE_FORCE_SP)
+			s_stefxMdrFrameLastReturned = i;
+#endif
 			return s_stefxBorgMdrFrameCache[i].data;
 		}
 	}
 
 	{
+#if defined(STEFX_ELITE_FORCE_SP)
+		int replacement = STEFX_MdrFrameReplacement(s_stefxBorgMdrFrameCacheReplace,
+			s_stefxMdrFrameLastReturned);
+		if (replacement != s_stefxBorgMdrFrameCacheReplace) {
+			if (!g_SPXBMdrFramePairProtected)
+				XBLog_WriteCritical("STEFX_MDR_FRAME_PAIR: protected live frame from FIFO eviction");
+			++g_SPXBMdrFramePairProtected;
+		}
+		s_stefxBorgMdrFrameCacheReplace = replacement;
+		s_stefxMdrFrameLastReturned = replacement;
+#endif
 		stefxBorgMdrFrameCache_t *cache =
 			&s_stefxBorgMdrFrameCache[s_stefxBorgMdrFrameCacheReplace];
-		const byte *patch = mod->stefxMdrFramePatches +
-			mod->stefxMdrFramePatchOffsets[frame];
+		const byte *patch;
 		unsigned short runCount;
 		int run;
 
@@ -1236,6 +1314,30 @@ const void *R_STEFX_GetMDRFrame(const md4Header_t *header, int frame)
 			(s_stefxBorgMdrFrameCacheReplace + 1) % STEFX_BORG_MDR_FRAME_CACHE_SLOTS;
 		cache->header = header;
 		cache->frame = frame;
+		if (mod->stefxMdrFrameBaseCount == -STEFX_MDR_BLOCK_FRAMES)
+		{
+			const int block = frame / STEFX_MDR_BLOCK_FRAMES;
+			if (s_stefxMdrBlockHeader != header || s_stefxMdrBlockIndex != block)
+			{
+				int frames = mod->stefxMdrFrameCount - block * STEFX_MDR_BLOCK_FRAMES;
+				if (frames > STEFX_MDR_BLOCK_FRAMES) frames = STEFX_MDR_BLOCK_FRAMES;
+				const int bytes = frames * mod->stefxMdrFrameSize;
+				unsigned int offset = mod->stefxMdrFramePatchOffsets[block];
+				unsigned int next = mod->stefxMdrFramePatchOffsets[block + 1];
+				const byte *source = mod->stefxMdrFramePatches + offset;
+				const int capacity = mod->dataSize - (mod->stefxMdrFramePatches - (const byte *)header);
+				if (capacity <= 0 || next > (unsigned int)capacity || next <= offset ||
+					!StefxMdrFrame::Decode(source, next - offset, s_stefxMdrBlockRaw,
+					 bytes, mod->stefxMdrFrameSize, s_stefxMdrBlockPacked, sizeof(s_stefxMdrBlockPacked)))
+					Com_Error(ERR_DROP, "Invalid MDR animation block %s:%d", mod->name, block);
+				s_stefxMdrBlockHeader = header;
+				s_stefxMdrBlockIndex = block;
+			}
+			memcpy(cache->data, s_stefxMdrBlockRaw +
+				(frame % STEFX_MDR_BLOCK_FRAMES) * mod->stefxMdrFrameSize, mod->stefxMdrFrameSize);
+			return cache->data;
+		}
+		patch = mod->stefxMdrFramePatches + mod->stefxMdrFramePatchOffsets[frame];
 		if (frame < mod->stefxMdrFrameBaseCount)
 		{
 			memcpy(cache->data,
@@ -1281,6 +1383,7 @@ static md4Header_t *STEFX_RegisterCompactBorgMdr(model_t *mod, void *buffer,
 	int allocBytes;
 	int frame;
 	qboolean newBase = qfalse;
+	qboolean allocationOnHeap = qfalse;
 	byte *allocation;
 	md4Header_t *compact;
 
@@ -1312,7 +1415,7 @@ static md4Header_t *STEFX_RegisterCompactBorgMdr(model_t *mod, void *buffer,
 		return NULL;
 	}
 	frameSize = frameBytes / source->numFrames;
-	if (frameSize <= 0 || frameSize > STEFX_BORG_MDR_MAX_FRAME_BYTES)
+	if (frameSize <= 0 || frameSize > 640)
 	{
 		return NULL;
 	}
@@ -1320,7 +1423,7 @@ static md4Header_t *STEFX_RegisterCompactBorgMdr(model_t *mod, void *buffer,
 	base = &s_stefxBorgMdrFrameBases[group];
 	if (!base->frames)
 	{
-		base->frames = (byte *)HeapAlloc(GetProcessHeap(), 0, frameBytes);
+		base->frames = STEFX_AllocMdrStorage(frameBytes, &base->heapAllocated);
 		if (!base->frames)
 		{
 			return NULL;
@@ -1357,9 +1460,15 @@ static md4Header_t *STEFX_RegisterCompactBorgMdr(model_t *mod, void *buffer,
 		}
 	}
 	allocBytes = compactBytes + patchTableBytes + patchBytes;
-	allocation = (byte *)HeapAlloc(GetProcessHeap(), 0, allocBytes);
+	allocation = STEFX_AllocMdrStorage(allocBytes, &allocationOnHeap);
 	if (!allocation)
 	{
+		// A new base has no consumers until this first compact model succeeds.
+		if (newBase)
+		{
+			STEFX_FreeMdrStorage(base->frames, base->heapAllocated);
+			memset(base, 0, sizeof(*base));
+		}
 		XBLF("STEFX: Borg MDR compact allocation failed model='%s' compact=%d patch=%d total=%d",
 			cacheName, compactBytes, patchTableBytes + patchBytes, allocBytes);
 		return NULL;
@@ -1413,7 +1522,8 @@ static md4Header_t *STEFX_RegisterCompactBorgMdr(model_t *mod, void *buffer,
 
 	modelBin->pModelDiskImage = compact;
 	modelBin->iAllocSize = allocBytes;
-	modelBin->bHeapAllocated = qtrue;
+	modelBin->bHeapAllocated = allocationOnHeap;
+	modelBin->bFileBuffer = qfalse;
 	modelBin->bMdrCompacted = qtrue;
 	modelBin->pMdrFrameBase = base->frames;
 	modelBin->iMdrFrameBaseCount = base->frameCount;
@@ -1445,6 +1555,138 @@ static qboolean STEFX_RegisterGhoul2Disabled(model_t *mod, const char *name)
 #endif
 	return qtrue;
 }
+
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+static qboolean STEFX_TryStreamMdrFile(const char *name, void **buffer, qboolean *cached)
+{
+	if (!STEFX_IsPlayerModelName(name) || !STEFX_IsMdrModelName(name) ||
+		STEFX_IsBorgPlayerModelName(name)) return qfalse;
+	fileHandle_t file = 0;
+	int length = FS_FOpenFileByMode(name, &file, FS_READ);
+	md4Header_t header;
+	if (!file) return qfalse;
+	if (length < 131072 || FS_Read(&header, sizeof(header), file) != sizeof(header) ||
+		header.ident != MD4_IDENT || header.version != MD4_VERSION ||
+		header.numFrames <= 0 || header.numFrames > 65536 || header.numBones <= 0 ||
+		header.numBones > MD4_MAX_BONES || header.ofsFrames != -(int)sizeof(header) ||
+		header.ofsEnd != length || header.ofsTags < header.ofsLODs ||
+		header.ofsEnd < header.ofsTags || header.numLODs <= 0 || header.numLODs > 16)
+	{
+		FS_FCloseFile(file);
+		return qfalse;
+	}
+	const int frameSize = 40 + header.numBones * 24;
+	if (frameSize > STEFX_BORG_MDR_MAX_FRAME_BYTES ||
+		header.ofsLODs != sizeof(header) + header.numFrames * frameSize)
+	{
+		FS_FCloseFile(file);
+		return qfalse;
+	}
+	const int blocks = (header.numFrames + STEFX_MDR_BLOCK_FRAMES - 1) / STEFX_MDR_BLOCK_FRAMES;
+	const int geometry = sizeof(header) + length - header.ofsLODs;
+	const int tableBytes = (blocks + 1) * sizeof(unsigned int);
+	int packedBytes = 0, block;
+	bool transforms = true;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	transforms = Cvar_Get("stefx_mdr_frame_codec", "1", 0)->integer != 0;
+#endif
+	byte *transformWork = s_stefxMdrBlockPacked;
+	byte *encodedWork = s_stefxMdrBlockPacked + sizeof(s_stefxMdrBlockRaw);
+	const int encodedCapacity = sizeof(s_stefxMdrBlockPacked) - sizeof(s_stefxMdrBlockRaw);
+	qboolean valid = qtrue;
+	// A size pass avoids retaining the complete source file beside the packed
+	// model. Both passes read sequentially and use bounded reusable workspace.
+	s_stefxMdrBlockHeader = NULL;
+	for (block = 0; block < blocks; ++block)
+	{
+		int frames = header.numFrames - block * STEFX_MDR_BLOCK_FRAMES;
+		if (frames > STEFX_MDR_BLOCK_FRAMES) frames = STEFX_MDR_BLOCK_FRAMES;
+		int bytes = frames * frameSize;
+		if (FS_Read(s_stefxMdrBlockRaw, bytes, file) != bytes) { valid = qfalse; break; }
+		int encoded = StefxMdrFrame::Encode(s_stefxMdrBlockRaw, bytes, frameSize, transforms,
+			NULL, 0, transformWork, encodedWork, encodedCapacity, s_stefxMdrBlockDictionary);
+		if (!encoded) { valid = qfalse; break; }
+		packedBytes += encoded;
+	}
+	const int allocationBytes = geometry + tableBytes + packedBytes;
+	if (!valid || allocationBytes >= length - 8192)
+	{
+		FS_FCloseFile(file);
+		return qfalse;
+	}
+	qboolean heap = qfalse;
+	byte *allocation = STEFX_AllocMdrStorage(allocationBytes, &heap);
+	if (!allocation) { FS_FCloseFile(file); return qfalse; }
+	memcpy(allocation, &header, sizeof(header));
+	if (FS_Read(allocation + sizeof(header), length - header.ofsLODs, file) != length - header.ofsLODs)
+		valid = qfalse;
+	md4Header_t *compact = (md4Header_t *)allocation;
+	compact->ofsLODs = sizeof(header);
+	compact->ofsTags = sizeof(header) + header.ofsTags - header.ofsLODs;
+	compact->ofsEnd = geometry;
+	int lodAt = compact->ofsLODs;
+	for (int lodIndex = 0; valid && lodIndex < header.numLODs; ++lodIndex)
+	{
+		if (lodAt < (int)sizeof(header) || lodAt > compact->ofsTags - (int)sizeof(md4LOD_t)) { valid = qfalse; break; }
+		md4LOD_t *lod = (md4LOD_t *)(allocation + lodAt);
+		if (lod->ofsEnd <= 0 || lod->ofsEnd > compact->ofsTags - lodAt || lod->numSurfaces < 0) { valid = qfalse; break; }
+		int surfaceAt = lodAt + lod->ofsSurfaces;
+		for (int surfaceIndex = 0; surfaceIndex < lod->numSurfaces; ++surfaceIndex)
+		{
+			if (surfaceAt < lodAt || surfaceAt > lodAt + lod->ofsEnd - (int)sizeof(md4Surface_t)) { valid = qfalse; break; }
+			md4Surface_t *surface = (md4Surface_t *)(allocation + surfaceAt);
+			if (surface->ofsEnd <= 0 || surface->ofsEnd > lodAt + lod->ofsEnd - surfaceAt) { valid = qfalse; break; }
+			surface->ofsHeader = -surfaceAt;
+			surfaceAt += surface->ofsEnd;
+		}
+		lodAt += lod->ofsEnd;
+	}
+	if (lodAt != compact->ofsTags) valid = qfalse;
+	FS_Seek(file, sizeof(header), FS_SEEK_SET);
+	unsigned int *offsets = (unsigned int *)(allocation + geometry);
+	byte *packed = allocation + geometry + tableBytes;
+	int cursor = 0;
+	for (block = 0; valid && block < blocks; ++block)
+	{
+		int frames = header.numFrames - block * STEFX_MDR_BLOCK_FRAMES;
+		if (frames > STEFX_MDR_BLOCK_FRAMES) frames = STEFX_MDR_BLOCK_FRAMES;
+		int bytes = frames * frameSize;
+		if (FS_Read(s_stefxMdrBlockRaw, bytes, file) != bytes) { valid = qfalse; break; }
+		int count = StefxMdrFrame::Encode(s_stefxMdrBlockRaw, bytes, frameSize, transforms,
+			packed + cursor, packedBytes - cursor, transformWork, encodedWork, encodedCapacity,
+			s_stefxMdrBlockDictionary);
+		if (!count) { valid = qfalse; break; }
+		offsets[block] = cursor;
+		cursor += count;
+	}
+	FS_FCloseFile(file);
+	if (!valid || cursor != packedBytes)
+	{
+		STEFX_FreeMdrStorage(allocation, heap);
+		XBLog_WriteCriticalf("STEFX_MDR_BLOCK: rejected incomplete model='%s'", name);
+		return qfalse;
+	}
+	offsets[blocks] = cursor;
+	CachedEndianedModelBinary_t &entry = (*CachedModels)[name];
+	entry.pModelDiskImage = compact;
+	entry.iAllocSize = allocationBytes;
+	entry.bHeapAllocated = heap;
+	entry.bFileBuffer = qfalse;
+	entry.bMdrCompacted = qtrue;
+	entry.bMdrNeedsRegistration = qtrue;
+	entry.pMdrFrameBase = allocation;
+	entry.iMdrFrameBaseCount = -STEFX_MDR_BLOCK_FRAMES;
+	entry.iMdrFrameSize = frameSize;
+	entry.iMdrFrameCount = header.numFrames;
+	entry.iMdrFramePatchOffsetsOffset = geometry;
+	entry.iMdrFramePatchesOffset = geometry + tableBytes;
+	*buffer = compact;
+	*cached = qfalse;
+	XBLog_WriteCriticalf("STEFX_MDR_BLOCK: model='%s' original=%d resident=%d saved=%d blocks=%d",
+		name, length, allocationBytes, length - allocationBytes, blocks);
+	return qtrue;
+}
+#endif
 
 static qhandle_t STEFX_RegisterMdrPlaceholderIfPresent(model_t *mod, const char *name)
 {
@@ -1484,7 +1726,6 @@ static qhandle_t STEFX_RegisterMdrPlaceholderIfPresent(model_t *mod, const char 
 #if defined(_XBOX)
 	if (STEFX_IsPlayerModelName(name) && !STEFX_IsBorgPlayerModelName(name))
 	{
-		const char *fallbackName = STEFX_DefaultPlayerMdrFallbackName(name);
 		int requestSize = len + 1;
 		int realSize = 0;
 		int alignPad = 0;
@@ -1493,35 +1734,17 @@ static qhandle_t STEFX_RegisterMdrPlaceholderIfPresent(model_t *mod, const char 
 
 		STEFX_LogMdrMemoryStats("preflight", name, len, requestSize, realSize, alignPad, wouldFit ? 1 : 0);
 
-		if (!wouldFit && fallbackName && !STEFX_IsDefaultPlayerMdrFallbackName(name))
-		{
-			FS_FCloseFile(f);
-			mod->type = MOD_BAD;
-			RE_InsertModelIntoHash(name, mod);
-			XBLog_WriteCriticalf("STEFX_MODEL_BOOT: MDR player part cannot fit '%s' len=%d request=%d real=%d largest=%d shortfall=%d fallbackSuppressed='%s'; inserted MOD_BAD",
-				name,
-				len,
-				requestSize,
-				realSize,
-				largestFreeBlock,
-				(realSize > largestFreeBlock) ? (realSize - largestFreeBlock) : 0,
-				fallbackName);
-			return mod->index;
-		}
-
 		if (!wouldFit)
 		{
-			FS_FCloseFile(f);
-			mod->type = MOD_BAD;
-			RE_InsertModelIntoHash(name, mod);
-			XBLog_WriteCriticalf("STEFX_MODEL_BOOT: MDR default player model cannot fit '%s' len=%d request=%d real=%d largest=%d shortfall=%d; inserted MOD_BAD",
+			// FS_ReadFile tries page-backed and heap storage before its zone
+			// fallback. A zone-only estimate must not poison the model cache.
+			XBLog_WriteCriticalf("STEFX_MODEL_BOOT: MDR zone estimate insufficient '%s' len=%d request=%d real=%d largest=%d shortfall=%d; trying file allocators",
 				name,
 				len,
 				requestSize,
 				realSize,
 				largestFreeBlock,
 				(realSize > largestFreeBlock) ? (realSize - largestFreeBlock) : 0);
-			return mod->index;
 		}
 	}
 
@@ -1601,7 +1824,20 @@ static void STEFX_LogMdrMemoryStats(const char *phase, const char *name, int fil
 	zmemstats_t stats;
 	int shortfall;
 
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	extern void Z_GetMemoryStatsForAsset(zmemstats_t *stats, unsigned int assetContext);
+	// FNV-1a of phase + '|' + name, copied into the same memory publication.
+	// This survives log-ring rotation without retaining ephemeral name pointers.
+	unsigned int context = 2166136261u;
+	const unsigned char *text = (const unsigned char *)(phase ? phase : "");
+	while (*text) { context = (context ^ *text++) * 16777619u; }
+	context = (context ^ (unsigned int)'|') * 16777619u;
+	text = (const unsigned char *)(name ? name : "");
+	while (*text) { context = (context ^ *text++) * 16777619u; }
+	Z_GetMemoryStatsForAsset(&stats, context);
+#else
 	Z_GetMemoryStats(&stats);
+#endif
 	shortfall = (realSize > stats.largestFreeBlock) ? (realSize - stats.largestFreeBlock) : 0;
 
 	XBLog_WriteCriticalf("STEFX_MODEL_BOOT: MDR memory %s model='%s' fileLen=%d request=%d real=%d alignPad=%d fit=%d shortfall=%d zoneSize=%d used=%d overhead=%d free=%d largest=%d freeBlocks=%d peak=%d md3=%d glm=%d gla=%d bsp=%d sndRaw=%d filesys=%d",
@@ -2215,6 +2451,17 @@ static qboolean R_LoadMDR (model_t *mod, void *buffer, const char *mod_name, qbo
 	{
 		mod->md4 = (md4Header_t *)RE_RegisterModels_Malloc(size, buffer, mod_name,
 			&bAlreadyFound, TAG_MODEL_MD3);
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+		char cacheName[MAX_QPATH];
+		Q_strncpyz(cacheName, mod_name, sizeof(cacheName));
+		Q_strlwr(cacheName);
+		CachedEndianedModelBinary_t &entry = (*CachedModels)[cacheName];
+		if (entry.bMdrCompacted && entry.iMdrFrameBaseCount == -STEFX_MDR_BLOCK_FRAMES)
+		{
+			STEFX_AssignMdrFrameStorage(mod, entry);
+			mod->dataSize += entry.iAllocSize - size;
+		}
+#endif
 	}
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	STEFX_RENDER_MODEL_PHASE( 0x32 );

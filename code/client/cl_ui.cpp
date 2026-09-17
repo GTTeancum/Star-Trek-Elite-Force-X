@@ -694,6 +694,10 @@ void CL_STEFX_MissionFailedOverlay_f( void )
 void CL_GenericMenu_f(void)
 {		
 	char *arg = Cmd_Argv( 1 );
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	if (!Q_stricmp(Cmd_Argv(0), "endholodeckmenu"))
+		arg = "endholomenu";
+#endif
 	if ( !arg || !arg[0] )
 	{
 		arg = NULL;

@@ -673,7 +673,7 @@ static void RB_SurfaceEFAlphaVertPoly( void )
 	vec3_t up;
 	float radius = e->stefxData.sprite.radius;
 	float rotation = e->stefxData.sprite.rotation;
-	int firstVertex = tess.numVertexes;
+	int firstVertex;
 	int vertex;
 
 	if ( rotation == 0.0f )
@@ -699,6 +699,8 @@ static void RB_SurfaceEFAlphaVertPoly( void )
 	} 
 
 	RB_AddQuadStamp( e->origin, left, up, e->shaderRGBA );
+	// RB_AddQuadStamp may flush a full batch before appending this quad.
+	firstVertex = tess.numVertexes - 4;
 	for ( vertex = 0; vertex < 4; ++vertex )
 	{
 		memcpy( tess.vertexColors[firstVertex + vertex],

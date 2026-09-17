@@ -12,6 +12,7 @@
 #include "qcommon.h"
 #include "files.h"
 #ifdef _XBOX
+#include <xtl.h>
 #include "../win32/xb_log.h"
 #endif
 
@@ -210,7 +211,8 @@ fileHandle_t	FS_HandleForFile(void) {
 
 	for ( i = 1 ; i < MAX_FILE_HANDLES ; i++ ) {
 #ifdef _XBOX
-		if ( !fsh[i].used ) {
+		// Reserve before an open can yield to the sound streaming thread.
+		if ( InterlockedCompareExchange((LONG *)&fsh[i].used, qtrue, qfalse) == qfalse ) {
 #else
 		if ( fsh[i].handleFiles.file.o == NULL ) {
 #endif
@@ -371,6 +373,9 @@ int FS_SV_FOpenFileRead( const char *filename, fileHandle_t *fp ) {
 	fsh[f].handleFiles.file.o = fopen( ospath, "rb" );
 	fsh[f].handleSync = qfalse;
 	if (!fsh[f].handleFiles.file.o) {
+#ifdef _XBOX
+		InterlockedExchange((LONG *)&fsh[f].used, qfalse);
+#endif
 		f = 0;
 	}
   
@@ -420,6 +425,9 @@ fileHandle_t FS_FOpenFileAppend( const char *filename ) {
 	fsh[f].handleFiles.file.o = fopen( ospath, "ab" );
 	fsh[f].handleSync = qfalse;
 	if (!fsh[f].handleFiles.file.o) {
+#ifdef _XBOX
+		InterlockedExchange((LONG *)&fsh[f].used, qfalse);
+#endif
 		f = 0;
 	}
 	return f;

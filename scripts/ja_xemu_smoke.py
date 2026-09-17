@@ -199,7 +199,7 @@ def resolve_map_symbol(symbol):
     map_paths = []
     if MAP_PATH_OVERRIDE:
         map_paths.append(MAP_PATH_OVERRIDE)
-    map_paths += [
+    map_paths += [] if MAP_PATH_OVERRIDE else [
         os.path.join("build", "release", "default.map"),
         os.path.join("build", "release", "ja-release.map"),
         os.path.join("code", "x_exe", "Release", "default.map"),
@@ -224,7 +224,7 @@ def resolve_map_symbol(symbol):
 
 
 def resolve_map_symbol_in(symbol, path):
-    pattern = re.compile(r"\b%s\b\s+([0-9a-fA-F]{8})\b" % re.escape(symbol))
+    pattern = re.compile(r"(?:^|\s)%s\s+([0-9a-fA-F]{8})(?:\s|$)" % re.escape(symbol))
     if not os.path.exists(path):
         return None
     try:
@@ -667,6 +667,21 @@ def parse_monitor_words(text, base_addr=None):
 
 
 def probe_xblog_physical_addr(sock, boot_va, preferred_delta, log):
+    # Current title mappings need not match historical flat relocation deltas.
+    # Translate the live virtual page first and still require both sentinels.
+    # Keep the existing recovery scan for old monitors or unavailable mappings.
+    if 4 <= (boot_va & 0xFFF) <= 0xFE0:
+        try:
+            mapped = monitor_gva_to_gpa(sock, boot_va)
+            if mapped is not None and 4 <= mapped < 0x04000000 - 28:
+                reply = monitor_cmd(sock, "xp/8wx 0x%08x" % (mapped - 4), 0.15)
+                words = parse_monitor_words(reply)
+                if len(words) >= 5 and words[0] == 0x53504546 and words[4] == 0x48424653:
+                    log("xblog_probe mapped va=0x%08x addr=0x%08x delta=0x%x" %
+                        (boot_va, mapped, boot_va - mapped))
+                    return mapped
+        except OSError:
+            pass
     candidates = []
     for delta in (
         preferred_delta,
@@ -793,6 +808,15 @@ def monitor_read_u32(sock, addr, phys_delta=None):
     reply = monitor_cmd(sock, "%s/1wx 0x%08x" % (cmd, read_addr), 0.2)
     words = parse_monitor_words(reply, read_addr)
     return words[0] if words else None
+
+
+def resume_after_setup(sock, log):
+    status = monitor_cmd(sock, "info status", 0.2)
+    if not re.search(r"VM status:\s*(?:prelaunch|paused)\b", status):
+        raise RuntimeError("Expected paused startup CPU before timed boot: " + status.strip())
+    log("emulation_setup_verified_paused")
+    monitor_cmd(sock, "cont", 0.2)
+    log("emulation_started_after_setup")
 
 
 def monitor_read_virtual_words(sock, addr, count):
@@ -1107,7 +1131,115 @@ def dump_physical_memory(sock, prefix, specs, log):
             log("final_dump_phys_reply=present bytes=%u" % len(reply))
 
 
-def extract_xblog_profiles_from_physical_memory(sock, prefix, log):
+def dump_sp_player_state(sock, prefix, log):
+    """Read SP entity zero through its real client pointer; never alter input/state.
+
+    Layout compiled with Xbox5558/VC71 from the active g_local.h, recorded in
+    build/research/letterbox_perf/sp_player_layout.cpp and .asm (2026-09-09).
+    This layout is SP-only; callers request the pointer only for SP builds.
+    """
+    import struct
+    import json
+    pointer_path = "%s_final_sp_entities_pointer.bin" % prefix
+    if not os.path.isfile(pointer_path):
+        return
+    try:
+        with open(pointer_path, "rb") as f:
+            entities, = struct.unpack("<I", f.read())
+        if not entities or entities & 3:
+            raise ValueError("invalid entity pointer")
+        dump_virtual_memory_binary(sock, prefix, ["0x%x:1056:sp_entity_zero" % entities], log)
+        with open("%s_final_sp_entity_zero.bin" % prefix, "rb") as f:
+            entity = f.read()
+        if len(entity) != 1056:
+            raise ValueError("short entity dump")
+        client, = struct.unpack_from("<I", entity, 232)
+        if not client or client & 3:
+            raise ValueError("invalid client pointer")
+        dump_virtual_memory_binary(sock, prefix, ["0x%x:3364:sp_player_client" % client], log)
+        with open("%s_final_sp_player_client.bin" % prefix, "rb") as f:
+            state = f.read()
+        if len(state) != 3364:
+            raise ValueError("short client dump")
+        result = dict(entity=entities, client=client,
+                      command_time=struct.unpack_from("<i", state, 0)[0],
+                      origin=struct.unpack_from("<3f", state, 20),
+                      viewangles=struct.unpack_from("<3f", state, 156),
+                      health=struct.unpack_from("<i", state, 188)[0],
+                      entity_health=struct.unpack_from("<i", entity, 540)[0],
+                      entity_flags=struct.unpack_from("<I", entity, 340)[0],
+                      god_mode=bool(struct.unpack_from("<I", entity, 340)[0] & 0x10))
+        with open("%s_player_state.json" % prefix, "w") as f:
+            json.dump(result, f, indent=2)
+        log("sp_player_state=" + json.dumps(result))
+    except (OSError, ValueError, struct.error) as error:
+        log("sp_player_state_unavailable=" + str(error))
+
+
+def dump_sp_facing_triggers(sock, prefix, log):
+    """Opt-in read-only inspection; offsets compiled by verify_vv_trigger_layout.py."""
+    import struct
+    import json
+    try:
+        with open(prefix + "_final_sp_entities_pointer.bin", "rb") as f:
+            base, = struct.unpack("<I", f.read())
+        if not base or base & 3:
+            raise ValueError("invalid SP entity pointer")
+        dump_virtual_memory_binary(sock, prefix,
+                                   ["0x%x:%d:sp_entities" % (base, 1056 * 1024)], log)
+        with open(prefix + "_final_sp_entities.bin", "rb") as f:
+            data = f.read()
+        if len(data) != 1056 * 1024:
+            raise ValueError("short SP entity array")
+        result = []
+        specs = []
+        for index in range(1024):
+            ent = data[index * 1056:(index + 1) * 1056]
+            u = lambda offset: struct.unpack_from("<I", ent, offset)[0]
+            if not u(236) or u(336) != 3:
+                continue
+            record = dict(index=index, address=base + index * 1056,
+                          svFlags=u(244), contents=u(276), nextthink=u(504),
+                          think=u(508), touch=u(524), use=u(528),
+                          movedir=struct.unpack_from("<3f", ent, 428),
+                          absmin=struct.unpack_from("<3f", ent, 280),
+                          absmax=struct.unpack_from("<3f", ent, 292),
+                          wait=struct.unpack_from("<f", ent, 604)[0], delay=u(612))
+            for label, offset in [("script_targetname", 816), ("use_script", 756)]:
+                pointer = u(offset)
+                record[label + "_pointer"] = pointer
+                if pointer:
+                    specs.append("0x%x:128:sp_trigger_%d_%s" % (pointer, index, label))
+            result.append(record)
+        dump_virtual_memory_binary(sock, prefix, specs, log)
+        for record in result:
+            for label in ("script_targetname", "use_script"):
+                path = "%s_final_sp_trigger_%d_%s.bin" % (prefix, record["index"], label)
+                if os.path.isfile(path):
+                    with open(path, "rb") as f:
+                        record[label] = f.read().split(b"\0", 1)[0].decode("ascii", "replace")
+        with open(prefix + "_sp_facing_triggers.json", "w") as f:
+            json.dump(result, f, indent=2)
+        log("sp_facing_triggers=" + json.dumps(result))
+    except (OSError, ValueError, struct.error) as error:
+        log("sp_facing_triggers_unavailable=" + str(error))
+
+
+def iter_marker_offsets(data, markers):
+    """Merge marker positions without repeatedly scanning the remaining RAM."""
+    positions = [data.find(marker) for marker in markers]
+    while True:
+        remaining = [position for position in positions if position >= 0]
+        if not remaining:
+            return
+        start = min(remaining)
+        yield start
+        for index, position in enumerate(positions):
+            if position == start:
+                positions[index] = data.find(markers[index], start + 1)
+
+
+def extract_xblog_profiles_from_physical_memory(sock, prefix, log, keep_guest_ram=False):
     """Recover completed in-guest frame profiles without polling relocated globals."""
     if sock is None:
         log("xblog_profile_extract skipped reason=no-monitor")
@@ -1117,19 +1249,41 @@ def extract_xblog_profiles_from_physical_memory(sock, prefix, log):
     output_path = os.path.abspath("%s_xblog_profiles.log" % prefix)
     monitor_path = scratch_path.replace("\\", "/")
     markers = (
+        b"STEFX_INPUT_REPLAY:",
+        b"STEFX_LONG_FRAME:",
+        b"STEFX_CAMERA_BARS:",
+        b"STEFX_COOP_SPAWN_STAGE:",
+        b"STEFX_MDR_STORAGE:",
+        b"EFALLOC_FATAL:",
+        b"STEFX_OVERLAY_PROJECTION:",
         b"STEFX_HW_FRAME_PROFILE:",
         b"STEFX_HW_FPS_SAMPLE:",
+        b"STEFX_MODEL_REGISTER_TIME:",
         b"STEFX_HW_RENDER_SAMPLE:",
         b"STEFX_HW_STAGE_CACHE:",
         b"STEFX_HW_VERTEX_SHADER_CACHE:",
         b"STEFX_HW_STREAM_SOURCE_CACHE:",
         b"STEFX_HW_MDR_PALETTE_CACHE:",
+        b"STEFX_HW_MDR_SKIN:",
+        b"STEFX_HW_MDR_POSE_CACHE:",
+        b"STEFX_MDR_POSE_CACHE:",
         b"STEFX_HW_SHADER_COST:",
         b"STEFX_HW_SHADER_COST_TOTAL:",
         b"STEFX_HW_SHADER_PRESSURE:",
         b"STEFX_HW_SHADER_PRESSURE_TOTAL:",
         b"STEFX_HW_SCRATCH_RING:",
         b"STEFX_HW_PROFILE: cgame",
+        b"STEFX_HW_MEMREPORT:",
+        b"STEFX_AUDIO_DSP:",
+        b"STEFX_AUDIO_HRTF:",
+        b"STEFX_VOICE_SPATIAL:",
+        b"STEFX_ZONE_INVALID_FREE",
+        b"STEFX_SP_AUDIO:",
+        b"JA: G_SoundOnEnt voice",
+        b"JA: Q3_PlaySound voice",
+        b"STEFX_VOICE_PLAY: start",
+        b"STEFX: Xbox voice AL stopped",
+        b"STEFX: Xbox voice duration stop",
     )
     records = []
     try:
@@ -1145,15 +1299,38 @@ def extract_xblog_profiles_from_physical_memory(sock, prefix, log):
 
         with open(scratch_path, "rb") as f:
             ram = f.read()
-        cursor = 0
+        # Preserve residency evidence before the bounded full-RAM scratch is
+        # deleted. These upload rows exist only in the stasis diagnostic build.
+        upload_path = "%s_final_stasis_upload.bin" % prefix
+        if os.path.isfile(upload_path):
+            import json
+            import struct
+            with open(upload_path, "rb") as f:
+                upload = f.read()
+            residency = []
+            if len(upload) == 432 * 4:
+                words = struct.unpack("<432I", upload)
+                for slot in range(27):
+                    row = words[slot * 16:(slot + 1) * 16]
+                    if not row[0]:
+                        continue
+                    address = row[8] & 0x7fffffff
+                    size = row[5]
+                    if address + size > len(ram):
+                        residency.append(dict(slot=slot, valid=False))
+                        continue
+                    value = 2166136261
+                    for byte in ram[address:address + size]:
+                        value = ((value ^ byte) * 16777619) & 0xffffffff
+                    residency.append(dict(slot=slot, valid=True, bytes=size,
+                                          upload_hash=row[10], final_hash=value,
+                                          matches=value == row[10]))
+                with open("%s_texture_residency.json" % prefix, "w") as f:
+                    json.dump(residency, f, indent=2)
+                log("texture_residency checked=%u mismatches=%u" %
+                    (len(residency), sum(not r.get("matches", False) for r in residency)))
         seen = set()
-        while True:
-            starts = [ram.find(marker, cursor) for marker in markers]
-            starts = [start for start in starts if start >= 0]
-            start = min(starts) if starts else -1
-            if start < 0:
-                break
-            cursor = start + 1
+        for start in iter_marker_offsets(ram, markers):
             limit = min(len(ram), start + 1024)
             end = limit
             for terminator in (b"\x00", b"\r", b"\n"):
@@ -1176,7 +1353,25 @@ def extract_xblog_profiles_from_physical_memory(sock, prefix, log):
             is_shader_pressure_total = line.startswith(
                 "STEFX_HW_SHADER_PRESSURE_TOTAL:")
             is_scratch_ring = line.startswith("STEFX_HW_SCRATCH_RING:")
-            if is_frame_profile:
+            if line.startswith("STEFX_CAMERA_BARS:"):
+                if not re.fullmatch(r"STEFX_CAMERA_BARS: time=\d+ camera=[01] visible=[01] alpha=[0-9.e+-]+ height=\d+ target=[01] rect=\d+,\d+,\d+,\d+", line):
+                    continue
+            elif line.startswith("STEFX_MODEL_REGISTER_TIME:"):
+                if not re.fullmatch(r"STEFX_MODEL_REGISTER_TIME: entity=\d+ time=\d+ elapsedMs=\d+", line):
+                    continue
+            elif line.startswith("STEFX_COOP_SPAWN_STAGE:"):
+                if not re.fullmatch(r"STEFX_COOP_SPAWN_STAGE: stage=\d+ time=\d+", line):
+                    continue
+            elif line.startswith("STEFX_MDR_STORAGE:"):
+                if not re.fullmatch(r"STEFX_MDR_STORAGE: bytes=\d+ heap=[01] allocated=[01]", line):
+                    continue
+            elif line.startswith("EFALLOC_FATAL:"):
+                if not re.fullmatch(r"EFALLOC_FATAL: request=\d+ tag=\d+ zone=\d+ used=\d+ free=\d+ largest=\d+ blocks=\d+ peak=\d+ bsp=\d+ snd=\d+ fs=\d+", line):
+                    continue
+            elif line.startswith("STEFX_OVERLAY_PROJECTION:"):
+                if not re.fullmatch(r"STEFX_OVERLAY_PROJECTION: pixels=\d+x\d+ widescreen=[01]", line):
+                    continue
+            elif is_frame_profile:
                 if not re.search(r"\bframe=\d+\b", line):
                     continue
                 if not re.search(r"\bfps=\d+\.\d+\b", line):
@@ -1187,7 +1382,18 @@ def extract_xblog_profiles_from_physical_memory(sock, prefix, log):
                         r"\bfps=\d+\.\d+\b.*\bplayers=\d+"
                         r"(?:\s+humans=\d+\s+bots=\d+\s+source=[^\s]*"
                         r"\s+virtual=\d+/\d+)?"
-                        r"(?:\s+scratch=\d+/\d+/\d+/\d+/\d+)?$", line):
+                        r"(?:\s+scratch=\d+/\d+/\d+/\d+/\d+)?"
+                        r"(?:\s+ft=\d+/\d+/\d+/\d+/\d+(?:/\d+)?)?"
+                        r"(?:\s+gameplay=[01]\s+excludedChecks=\d+)?$", line):
+                    continue
+            elif line.startswith("STEFX_HW_MDR_POSE_CACHE:"):
+                if not re.fullmatch(r"STEFX_HW_MDR_POSE_CACHE: frame=\d+ time=\d+ hits=\d+ misses=\d+ fallback=\d+ hitVerts=\d+ computedVerts=\d+ previousVerts=\d+ bytes=\d+", line):
+                    continue
+            elif line.startswith("STEFX_MDR_POSE_CACHE:"):
+                if not re.fullmatch(r"STEFX_MDR_POSE_CACHE: allocate bytes=\d+ success=[01]", line):
+                    continue
+            elif line.startswith("STEFX_HW_MDR_SKIN:"):
+                if not re.fullmatch(r"STEFX_HW_MDR_SKIN: sample=\d+ surfaces=\d+ vertices=\d+ keys=\d+ overflow=\d+ repeatedVerts=\d+ indexCycles=\d+ paletteCycles=\d+ skinCycles=\d+", line):
                     continue
             elif is_shader_cost or is_shader_pressure:
                 if not re.search(
@@ -1214,6 +1420,40 @@ def extract_xblog_profiles_from_physical_memory(sock, prefix, log):
                 if not re.search(
                         r"\bmode=\d+\b.*\bdraws=\d+\b.*\bfallbacks=\d+\b.*"
                         r"\bwaitMsec=\d+$", line):
+                    continue
+            elif (line.startswith("STEFX_VOICE_PLAY: start") or
+                    line.startswith("STEFX: Xbox voice AL stopped") or
+                    line.startswith("STEFX: Xbox voice duration stop")):
+                if not re.search(r"ent=-?\d+.*chan=-?\d+", line):
+                    continue
+            elif (line.startswith("STEFX_SP_AUDIO:") or
+                    line.startswith("JA: G_SoundOnEnt voice") or
+                    line.startswith("JA: Q3_PlaySound voice")):
+                if not re.search(r"(ent=-?\d+|is2D=\d+)", line):
+                    continue
+            elif line.startswith("STEFX_LONG_FRAME:"):
+                if not re.fullmatch(r"STEFX_LONG_FRAME: realtime=-?\d+ total=\d+ server=\d+ client=\d+(?: commands=\d+/\d+)?", line):
+                    continue
+            elif line.startswith("STEFX_INPUT_REPLAY:"):
+                if not (re.fullmatch(r"STEFX_INPUT_REPLAY: loaded map=[A-Za-z0-9_/]+ rows=\d+", line) or
+                        re.fullmatch(r"STEFX_INPUT_REPLAY: row=-?\d+ elapsed=\d+ origin=\([^)]*\) health=-?\d+", line)):
+                    continue
+            elif line.startswith("STEFX_HW_MEMREPORT:"):
+                if not re.search(r"physTotal=\d+.*audioUsed=\d+", line):
+                    continue
+            elif line.startswith("STEFX_AUDIO_DSP:"):
+                # The disabled message is a literal in the executable, so a
+                # RAM string scan cannot prove that branch actually executed.
+                if not re.search(r"source=(file|embedded) bytes=\d+.*hr=0x[0-9a-fA-F]+", line):
+                    continue
+            elif line.startswith("STEFX_VOICE_SPATIAL:"):
+                if not re.search(r"(mode=(speaker-pan|hrtf) listeners=\d+|hr=0x[0-9a-fA-F]+)", line):
+                    continue
+            elif line.startswith("STEFX_ZONE_INVALID_FREE"):
+                if not re.search(r"ptr=[0-9a-fA-F]{8} header=[0-9a-fA-F]{8} caller=[0-9a-fA-F]{8} tag=\d+", line):
+                    continue
+            elif line.startswith("STEFX_AUDIO_HRTF:"):
+                if not re.search(r"mode=\w+", line):
                     continue
             elif line.startswith("STEFX_HW_PROFILE: cgame"):
                 if not re.search(
@@ -1271,7 +1511,11 @@ def extract_xblog_profiles_from_physical_memory(sock, prefix, log):
         return []
     finally:
         try:
-            if os.path.exists(scratch_path):
+            if keep_guest_ram and os.path.isfile(scratch_path) and os.path.getsize(scratch_path) == 64 * 1024 * 1024:
+                saved_path = os.path.abspath("%s_final_guest_ram.bin" % prefix)
+                os.replace(scratch_path, saved_path)
+                log("guest_ram_preserved=%s" % saved_path)
+            elif os.path.exists(scratch_path):
                 os.remove(scratch_path)
                 log("xblog_profile_extract scratch_removed=%s" % scratch_path)
         except OSError as exc:
@@ -1298,7 +1542,16 @@ def dump_virtual_memory_binary(sock, prefix, specs, log):
         dump_path = os.path.abspath("%s_final_%s.bin" % (prefix, safe_name))
         monitor_path = dump_path.replace("\\", "/")
         try:
-            reply = monitor_cmd(sock, 'memsave 0x%08x 0x%x "%s"' % (addr, length, monitor_path), 4.0)
+            reply = monitor_cmd(sock, 'memsave 0x%08x 0x%x "%s"' % (addr, length, monitor_path), 0.2)
+            # The monitor prompt normally follows the completed write. Allow
+            # a bounded filesystem delay without spending four seconds on
+            # every tiny counter dump throughout the campaign sweep.
+            deadline = time.monotonic() + 4.0
+            while (not os.path.isfile(dump_path) or os.path.getsize(dump_path) != length):
+                if time.monotonic() >= deadline:
+                    log("final_dump_bin_mem_incomplete=%s expected=%d" % (dump_path, length))
+                    break
+                time.sleep(0.1)
         except OSError as exc:
             log("final_dump_bin_mem_unavailable=%s err=%s" % (spec, exc))
             continue
@@ -1373,6 +1626,8 @@ def main():
     parser.add_argument("--explicit-xbox-machine", action="store_true",
                         help="Launch with explicit OG Xbox machine/BIOS/HDD/DVD args instead of relying on xemu.toml.")
     parser.add_argument("--visible", action="store_true")
+    parser.add_argument("--process-priority", choices=("normal", "above-normal"), default="normal",
+                        help="Windows XEMU scheduling priority; record changes when comparing runs")
     parser.add_argument("--headless", action="store_true",
                         help="Run without a display window. Implies --display none and skips screenshots.")
     parser.add_argument("--no-screenshots", action="store_true",
@@ -1385,6 +1640,9 @@ def main():
                         default="xemu",
                         help="Xemu/QEMU display backend. Use none or egl-headless for unattended runs.")
     parser.add_argument("--no-monitor", action="store_true")
+    parser.add_argument("--gdb-port", type=int, help="Diagnostic-only local guest debugger; starts remain controlled by GDB")
+    parser.add_argument("--start-paused", action="store_true",
+                        help="Keep guest CPU paused until harness metadata setup is complete.")
     parser.add_argument("--monitor-keys", default="")
     parser.add_argument("--host-window-keys", action="store_true",
                         help="Send scheduled keys to XEMU's window without taking focus.")
@@ -1404,24 +1662,34 @@ def main():
     parser.add_argument("--keep-net", action="store_true")
     parser.add_argument("--dump-mem", action="append", default=[],
                         help="Dump guest memory before closing monitor: addr:length[:name]")
+    parser.add_argument("--inspect-sp-facing-triggers", action="store_true")
     parser.add_argument("--dump-bin-mem", action="append", default=[],
                         help="Dump guest virtual memory bytes with monitor memsave: addr:length[:name]")
+    parser.add_argument("--liveness-address", default="",
+                        help="Read a guest frame counter twice before final pause to check continued execution.")
     parser.add_argument("--dump-phys", action="append", default=[],
                         help="Dump guest physical memory before closing monitor: addr:length[:name]")
     parser.add_argument("--xblog-auto-dumps", action="store_true",
                         help="Add XBLog mirror/last-line physical and virtual dumps from resolved symbols.")
+    parser.add_argument("--keep-guest-ram", action="store_true", help="Preserve the final paused 64 MiB diagnostic RAM snapshot")
     parser.add_argument("--extract-xblog-profile", action="store_true",
                         help="At run end, scan one temporary 64 MiB RAM snapshot for completed STEFX_HW_FRAME_PROFILE records.")
     parser.add_argument("--watch-cr2", default="",
                         help="Poll registers and dump memory when CR2 matches this value")
     parser.add_argument("--sample-eip-interval", type=float, default=0.0,
                         help="Sample guest EIP through the monitor at this real-time interval.")
+    parser.add_argument("--flight-recorder", action="store_true",
+                        help="Read live guest stage counters and capture stalled frames; diagnostic only.")
     parser.add_argument("--poll-word-addr", default="",
                         help="Poll one guest virtual 32-bit counter address during the run.")
     parser.add_argument("--poll-word-count", type=int, default=1,
                         help="Number of adjacent guest words to snapshot (default: 1).")
     parser.add_argument("--poll-word-interval", type=float, default=1.0,
                         help="Seconds between generic guest counter polls.")
+    parser.add_argument("--poll-word-start-delay", type=float, default=0.0,
+                        help="Delay generic counter reads until the title has loaded.")
+    parser.add_argument("--poll-word-remap", action="store_true",
+                        help="Translate the current guest page before every counter read.")
     parser.add_argument("--poll-word-label", default="counter",
                         help="Label used for generic guest counter samples and summary.")
     parser.add_argument("--poll-xblog", action="store_true",
@@ -1443,6 +1711,8 @@ def main():
     parser.add_argument("--poll-xblog-phys-delta", default="0x284000",
                         help="Auto-resolved XBLog VA minus physical monitor address. Use 0 to poll virtual x/ memory.")
     args = parser.parse_args()
+    if args.start_paused and args.no_monitor:
+        parser.error("--start-paused requires the native monitor")
 
     global MAP_PATH_OVERRIDE
     if args.map_file:
@@ -1464,6 +1734,8 @@ def main():
 
     stamp = time.strftime("%Y%m%d_%H%M%S")
     prefix = os.path.join(OUT_DIR, "%s_%s" % (args.name, stamp))
+    flight = None
+    flight_attempted = False
     raw_log = prefix + ".xemu.txt"
     report = prefix + ".report.txt"
     if args.xemu_screenshot_dir:
@@ -1509,6 +1781,12 @@ def main():
         argv += ["-config_path", config_path]
     if not args.no_monitor:
         argv += ["-monitor", "tcp:127.0.0.1:%d,server,nowait" % args.port]
+    if args.start_paused:
+        argv += ["-S"]
+    if args.gdb_port:
+        if not args.start_paused or not 1 <= args.gdb_port <= 65535:
+            raise ValueError('Guest debugger requires a valid port and --start-paused')
+        argv += ["-gdb", "tcp:127.0.0.1:%d" % args.gdb_port]
     if not args.visible:
         # Keep the xemu display backend, but start it minimized-ish via QEMU's
         # normal window. We still capture frames through the monitor.
@@ -1577,11 +1855,14 @@ def main():
     xemu_cwd = os.path.dirname(xemu_exe) or XEMU_DIR
     popen_options = {}
     if os.name == "nt":
-        popen_options["creationflags"] = getattr(
-            subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x00004000)
+        popen_options["creationflags"] = (
+            getattr(subprocess, "ABOVE_NORMAL_PRIORITY_CLASS", 0x00008000)
+            if args.process_priority == "above-normal"
+            else getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0x00000020))
+        log("xemu_process_priority=%s" % args.process_priority)
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 7  # SW_SHOWMINNOACTIVE
+        startupinfo.wShowWindow = 7 if args.visible else 0  # SW_SHOWMINNOACTIVE / SW_HIDE
         popen_options["startupinfo"] = startupinfo
     proc = subprocess.Popen(
         argv,
@@ -1615,7 +1896,7 @@ def main():
     poll_word_gpa = None
     poll_word_previous = None
     poll_word_rates = []
-    next_poll_word = 0.0
+    next_poll_word = max(0.0, args.poll_word_start_delay)
     watch_cr2 = int(args.watch_cr2, 0) if args.watch_cr2 else None
     watch_done = False
     next_watch = 0.0
@@ -1688,7 +1969,7 @@ def main():
     next_xblog_probe = max(0.0, args.poll_xblog_start_delay)
     last_xblog_write_count = None
     texture_allocator_symbol = "?gStaticTextures@@3VStaticTextureAllocator@@A"
-    texture_allocator_map = (
+    texture_allocator_map = MAP_PATH_OVERRIDE or (
         xblog_map if xblog_map else os.path.join(
             "build", "release", "default.map"))
     texture_allocator_va = resolve_literal_map_symbol_in(
@@ -1698,7 +1979,9 @@ def main():
         if texture_allocator_va is not None else None)
     texture_allocator_gpa = None
     next_texture_allocator_poll = 0.0
-    hm_ingame_text_map = os.path.join("build", "release", "efmp.map")
+    symbol_bundle_dir = (os.path.dirname(MAP_PATH_OVERRIDE) if MAP_PATH_OVERRIDE
+                         else os.path.join("build", "release"))
+    hm_ingame_text_map = os.path.join(symbol_bundle_dir, "efmp.map")
     hm_ingame_text_va = resolve_runtime_map_symbol_in(
         "_STEFX_HM_CG_ingame_text", hm_ingame_text_map)
     hm_ingame_source_va = resolve_runtime_map_symbol_in(
@@ -2569,8 +2852,8 @@ def main():
              xblog_font_base_va, xblog_font_map))
     mini_soak_probes = {}
     for personality, map_path in (
-            ("default", os.path.join("build", "release", "default.map")),
-            ("efmp", os.path.join("build", "release", "efmp.map"))):
+            ("default", os.path.join(symbol_bundle_dir, "default.map")),
+            ("efmp", os.path.join(symbol_bundle_dir, "efmp.map"))):
         mini_va = resolve_runtime_map_symbol_in(
             "_g_SPXBMiniSoakMagic", map_path)
         if mini_va is not None:
@@ -2621,6 +2904,10 @@ def main():
         else:
             log("monitor=disabled")
         start = time.time()
+        if args.start_paused and args.gdb_port:
+            log("emulation_ready_for_gdb port=%d" % args.gdb_port)
+        elif args.start_paused:
+            resume_after_setup(sock, log)
         next_shot = max(0.0, float(args.first_shot_delay))
         next_eip_sample = 0.0
         shot = 0
@@ -2631,10 +2918,32 @@ def main():
                 log("process_exit t=%.1f rc=%s" % (elapsed, rc))
                 break
 
+            if args.flight_recorder and sock is not None and elapsed >= 40:
+                try:
+                    if not flight_attempted:
+                        flight_attempted = True
+                        from xemu_flight_recorder import Recorder
+                        flight = Recorder(proc.pid, prefix, args.map_file,
+                                          resolve_runtime_map_symbol_in,
+                                          lambda command: monitor_cmd(sock, command, 0.05))
+                        flight.emit({'kind': 'host_clock', 'epoch_start': start,
+                                     'source': 'time.time origin used for flight t; align Windows GPU epoch samples'})
+                        log("flight_recorder_open path=%s.flight.jsonl" % prefix)
+                    if flight:
+                        elapsed = time.time() - start
+                        flight.tick(elapsed)
+                except Exception as exc:
+                    log("flight_recorder_failed=%s" % exc)
+                    if flight:
+                        flight.close()
+                        flight = None
+
             if (sock is not None and args.sample_eip_interval > 0 and
                     elapsed >= next_eip_sample):
                 next_eip_sample = elapsed + max(0.1, args.sample_eip_interval)
                 regs = monitor_cmd(sock, "info registers", 0.05)
+                if flight:
+                    flight.capture_registers(regs, elapsed)
                 m = re.search(r"EIP=([0-9a-fA-F]{8})", regs)
                 if m:
                     log("eipsample t=%.2f eip=0x%08x" %
@@ -2644,7 +2953,7 @@ def main():
                     elapsed >= next_poll_word):
                 next_poll_word = elapsed + max(0.05, args.poll_word_interval)
                 try:
-                    if poll_word_gpa is None:
+                    if poll_word_gpa is None or args.poll_word_remap:
                         poll_word_gpa = monitor_gva_to_gpa(sock, poll_word_va)
                         if poll_word_gpa is not None:
                             log("word_counter_mapped label=%s va=0x%08x gpa=0x%08x" %
@@ -2788,10 +3097,8 @@ def main():
                             elapsed >= next_personality_probe):
                         next_personality_probe = elapsed + max(
                             2.0, float(args.interval))
-                        default_map = os.path.join(
-                            "build", "release", "default.map")
-                        efmp_map = os.path.join(
-                            "build", "release", "efmp.map")
+                        default_map = os.path.join(symbol_bundle_dir, "default.map")
+                        efmp_map = os.path.join(symbol_bundle_dir, "efmp.map")
                         personality_candidates = [
                             ("default",
                              resolve_runtime_map_symbol_in(
@@ -4811,7 +5118,7 @@ def main():
                     log("monitor_key t=%.1f key=%s hold=%.2f ok=%s detail=%s" %
                         (elapsed, event[1], event[2], ok, key_detail))
 
-            time.sleep(0.25)
+            time.sleep(0.05 if args.flight_recorder else 0.25)
 
         if proc.poll() is None:
             log("alive_at_end pid=%d" % proc.pid)
@@ -4821,17 +5128,35 @@ def main():
             # dumps can take several seconds, otherwise ring buffers and related
             # counters continue changing underneath the capture.
             try:
+                if args.liveness_address:
+                    address = int(args.liveness_address, 0)
+                    dump_virtual_memory_binary(sock, prefix,
+                        ["0x%x:4:liveness_before" % address], log)
+                    time.sleep(1.0)
+                    dump_virtual_memory_binary(sock, prefix,
+                        ["0x%x:4:liveness_after" % address], log)
                 monitor_cmd(sock, "stop", 0.2)
                 log("emulation_stopped_for_final_diagnostics")
+                # Preserve explicitly requested small counters before the full
+                # RAM scan, which can take long enough to lose the connection.
+                player_specs = [spec for spec in args.dump_bin_mem
+                                if spec.endswith(':sp_entities_pointer')]
+                dump_virtual_memory_binary(sock, prefix, player_specs, log)
+                dump_sp_player_state(sock, prefix, log)
+                if args.inspect_sp_facing_triggers:
+                    dump_sp_facing_triggers(sock, prefix, log)
+                dump_virtual_memory_binary(sock, prefix,
+                    [spec for spec in args.dump_bin_mem if spec not in player_specs], log)
                 if args.extract_xblog_profile:
                     extracted_profile_records = extract_xblog_profiles_from_physical_memory(
-                        sock, prefix, log)
+                        sock, prefix, log, args.keep_guest_ram)
                 dump_monitor_state(sock, prefix, "final", args.dump_mem, log)
-                dump_virtual_memory_binary(sock, prefix, args.dump_bin_mem, log)
                 dump_physical_memory(sock, prefix, args.dump_phys, log)
             except OSError as exc:
                 log("final_diagnostics_unavailable=%s" % exc)
     finally:
+        if flight:
+            flight.close()
         if sock:
             try:
                 sock.close()
@@ -4854,6 +5179,10 @@ def main():
     extracted_fps_samples = []
     for record in extracted_profile_records:
         if not record.startswith("STEFX_HW_FPS_SAMPLE:"):
+            continue
+        # Untagged historical samples cannot establish gameplay acceptance.
+        # The runtime latches intro/menu/loading contamination across the window.
+        if not re.search(r"\bgameplay=1 excludedChecks=0$", record):
             continue
         sample_match = re.search(r"\bsample=(\d+)\b", record)
         fps_match = re.search(r"\bfps=(\d+)\.(\d+)\b", record)

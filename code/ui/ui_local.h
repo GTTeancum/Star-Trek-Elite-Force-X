@@ -344,6 +344,8 @@ extern qboolean UI_EFSave_CreateNew(void);
 extern qboolean UI_EFSave_Overwrite(int index);
 extern qboolean UI_EFPauseMenu_IsActive(void);
 extern void UI_EFPauseMenu_Cache(void);
+extern int UI_EFPropTextWidth(const char *text, int style);
+extern void UI_EFDrawPropText(int x, int y, const char *text, int style, int colorIndex);
 extern void UI_EFPauseMenu_InvalidateCache(void);
 extern void UI_EFPauseMenu_Open(const char *menuID);
 extern void UI_EFPauseMenu_Deactivate(void);

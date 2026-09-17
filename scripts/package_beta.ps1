@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "Beta-20260801",
     [string]$Iso = "build\xemu\StarTrekEliteForceX_Beta.iso"
 )
@@ -24,6 +24,14 @@ else {
 $releaseRoot = Join-Path $repoRoot "build\beta"
 $packageDir = Join-Path $releaseRoot "StarTrekEliteForceX-$Version"
 $packageIso = Join-Path $packageDir "StarTrekEliteForceX-$Version.iso"
+$packageIso = [System.IO.Path]::GetFullPath($packageIso)
+$betaPrefix = [System.IO.Path]::GetFullPath($releaseRoot).TrimEnd('\') + '\'
+if (-not $packageIso.StartsWith($betaPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Beta output must remain under $releaseRoot"
+}
+if ($packageIso.Equals($Iso, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Beta output must differ from the source ISO"
+}
 
 if (-not (Test-Path -LiteralPath $Iso -PathType Leaf)) {
     throw "Beta ISO not found: $Iso"
@@ -63,12 +71,8 @@ New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
 if (Test-Path -LiteralPath $packageIso -PathType Leaf) {
     Remove-Item -LiteralPath $packageIso -Force
 }
-try {
-    New-Item -ItemType HardLink -Path $packageIso -Target $Iso -ErrorAction Stop | Out-Null
-}
-catch {
-    Copy-Item -LiteralPath $Iso -Destination $packageIso -Force
-}
+# Keep the beta independent of the working ISO: probes temporarily modify it.
+Copy-Item -LiteralPath $Iso -Destination $packageIso -Force
 
 $componentPaths = [ordered]@{
     "default.xbe" = Join-Path $repoRoot "build\release\default.xbe"
@@ -118,18 +122,28 @@ $manifest = [ordered]@{
     }
     components = $components
     qualification = @(
-        "scripts/output/stefx-beta-final-minisoak2_borg2_20260801_101352.report.txt",
-        "scripts/output/stefx-beta-xbe-roundtrip6_normal_20260801_095353.report.txt",
-        "scripts/output/stefx-beta-cleaniso-final_normal_20260801_114812.report.txt",
+        "notes/mp_optimization_2026-09-10.md",
         "HOLOMATCH_QUALIFICATION.md"
     )
+    qualificationScope = "Historical XEMU evidence applies to its recorded executable hashes; package creation does not qualify new binaries."
+    pendingChecks = @(
+        "Final packaged executable verification",
+        "Retail Xbox performance and physical controllers"
+    )
     deferred = @(
-        "XEMU frame-rate optimization",
-        "Four-player split-screen"
+        "Co-op: not finished",
+        "Muddy positional dialogue: investigation paused by user"
     )
 }
 
 $manifestPath = Join-Path $packageDir "release_manifest.json"
+$manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+& $pythonExe (Join-Path $repoRoot "scripts\verify_beta_iso_components.py") `
+    --iso $packageIso --manifest $manifestPath --release-root (Join-Path $repoRoot "build\release") > (Join-Path $packageDir "iso_component_verification.json")
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged ISO components do not match the release manifest"
+}
+$manifest.components = Get-Content -LiteralPath (Join-Path $packageDir "iso_component_verification.json") -Raw | ConvertFrom-Json
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 
 $checksumsPath = Join-Path $packageDir "SHA256SUMS.txt"
@@ -139,31 +153,31 @@ $checksumsPath = Join-Path $packageDir "SHA256SUMS.txt"
 $readme = @"
 Star Trek: Elite Force X - $Version
 
-This beta contains the qualified unified Xbox runtime:
+This is a beta candidate for testing.
 
-- default.xbe: single-player campaign and two-player cooperative play
-- efmp.xbe: Holomatch multiplayer
-- BaseEF: shared renderer, audio, input, collision, UI assets, and game data
+- default.xbe: single-player campaign; co-op is not finished
+- efmp.xbe: Holomatch, including four-player split screen
+- BaseEF: shared runtime assets and game data
 
-Launch default.xbe. The shared main menu can start campaign, cooperative play,
-or hand off to efmp.xbe for Holomatch. The Holomatch frontend can return to
-default.xbe. To install on a softmodded Xbox, extract the XISO without changing
-its directory layout.
+Preserve the directory layout when extracting the XISO for Xbox installation.
 
-Qualification completed in XEMU/LLE:
+Recorded Holomatch performance evidence:
 
-- Campaign boot, loading, gameplay, and return to the main menu
-- Two-player co-op split-screen, independent P2 input, and viewport parity
-- Holomatch FFA and CTF with bots, weapons, damage, pickups, HUD, audio, and loading
-- default.xbe to efmp.xbe to default.xbe handoff
-- Continuous SP to co-op to Holomatch mini-soak
-- Marker-free release-disc boot
+Four moving players and four active bots completed ten-minute XEMU runs on
+hm_borg1 and hm_voy1, averaging 30.57 and 28.62 guest-clock FPS. Short windows
+fell below 20 FPS. Those results apply to the executable hashes in the linked
+qualification notes, not automatically to a newly packaged executable.
+Retail Xbox performance and physical-controller checks remain outstanding.
 
-Known post-beta work:
+Known limitations:
 
-- XEMU frame-rate optimization remains open. Functional stalls and crashes are
-  release blockers; raw FPS tuning is deferred.
-- Four-player split-screen remains a future feature.
+- Co-op is not finished and is the lowest release priority.
+- Positional character voices remain muddy on Xbox; audio work is paused.
+- Campaign route completion, the ending, and retail rendering checks remain
+  open. See GAME_TODO.md for the current list.
+
+The MP optimization item is closed under the user's 20+ average beta target
+for the recorded XEMU workload. No additional 30 FPS pass is deferred here.
 
 Verify the XISO with SHA256SUMS.txt. Detailed hashes and proof references are in
 release_manifest.json.

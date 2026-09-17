@@ -134,7 +134,18 @@ static qboolean STEFX_ShouldTryStdioWholeFileRead(const char *filename)
 
 	if (filename &&
 		(!Q_stricmpn(filename, "botfiles/", 9) ||
-		 !Q_stricmpn(filename, "botfiles\\", 9)))
+		 !Q_stricmpn(filename, "botfiles\\", 9) ||
+		 !Q_stricmpn(filename, "bots/", 5) ||
+		 !Q_stricmpn(filename, "bots\\", 5)))
+	{
+		return qtrue;
+	}
+
+	// Bot definitions are byte-sized text reads. Unbuffered loose-file handles
+	// cannot reliably seek to their non-sector-aligned end or read parser buffers.
+	if (filename && ext &&
+		(!Q_stricmpn(filename, "scripts/", 8) || !Q_stricmpn(filename, "scripts\\", 8)) &&
+		(!Q_stricmp(ext, ".txt") || !Q_stricmp(ext, ".bot") || !Q_stricmp(ext, ".arena")))
 	{
 		return qtrue;
 	}
@@ -245,6 +256,7 @@ qboolean FS_STEFX_IsHeapFileBuffer(const void *buffer)
 
 static byte *STEFX_AllocHeapFileBuffer(int len, const char *qpath)
 {
+	extern void *Z_TryMalloc(int size, memtag_t tag, int alignment);
 	memtag_t tag;
 	byte *base;
 	byte *payload;
@@ -293,15 +305,17 @@ static byte *STEFX_AllocHeapFileBuffer(int len, const char *qpath)
 		if (tag == TAG_MODEL_MD3 || tag == TAG_BSP)
 		{
 			g_SPXBFileAllocStage = 0x14;
-			zoneFallback = (byte *)Z_Malloc(len + 1, tag, qfalse, 32);
+			zoneFallback = tag == TAG_MODEL_MD3
+				? (byte *)Z_TryMalloc(len + 1, tag, 32)
+				: (byte *)Z_Malloc(len + 1, tag, qfalse, 32);
 			if (zoneFallback)
 			{
-				XBLog_Write(va("STEFX: FS whole-file zone fallback file='%s' len=%d tag=%d payload=%p",
-					qpath ? qpath : "(null)", len, (int)tag, zoneFallback));
+				XBLog_WriteCriticalf("STEFX: FS whole-file zone fallback file='%s' len=%d tag=%d payload=%p",
+					qpath ? qpath : "(null)", len, (int)tag, zoneFallback);
 				return zoneFallback;
 			}
-			XBLog_Write(va("STEFX: FS whole-file zone fallback failed file='%s' len=%d tag=%d",
-				qpath ? qpath : "(null)", len, (int)tag));
+			XBLog_WriteCriticalf("STEFX: FS whole-file zone fallback failed file='%s' len=%d tag=%d",
+				qpath ? qpath : "(null)", len, (int)tag);
 		}
 		return NULL;
 	}
@@ -889,7 +903,10 @@ void FS_FCloseFile( fileHandle_t f )
 		if (traceWholeClose) g_SPXBFSWholeCloseStage = 0x46534307u; /* FSC7: loose handle closed */
 	}
 
-	memset(&fsh[f], 0, sizeof(fsh[f]));
+	// Publish the slot as free only after all old owner state is cleared.
+	memset(&fsh[f], 0, (byte *)&fsh[f].used - (byte *)&fsh[f]);
+	fsh[f].whandle = 0;
+	InterlockedExchange((LONG *)&fsh[f].used, qfalse);
 	if (traceWholeClose) g_SPXBFSWholeCloseStage = 0x46534308u; /* FSC8: slot cleared */
 #else
 	if (fsh[f].gob)
@@ -920,6 +937,7 @@ fileHandle_t FS_FOpenFileWrite( const char *filename )
 		return f;
 	}
 
+	InterlockedExchange((LONG *)&fsh[f].used, qfalse);
 	return 0;
 }
 
@@ -1004,7 +1022,9 @@ static int FS_FOpenFileReadOS( const char *filename, fileHandle_t f )
 				{
 					XBLog_Write(va("STEFX: FS loose asset rejected zero length file='%s' open='%s' os='%s' len=%d caseRetry=%d",
 						filename, caseOpenName, osname, len, casePass));
-					FS_FCloseFile(f);
+					// Keep the FS slot reserved while trying another path.
+					WF_Close(fsh[f].whandle);
+					fsh[f].whandle = -1;
 					continue;
 				}
 				if (traceDefaultCfg)
@@ -1730,6 +1750,7 @@ int FS_FOpenFileRead( const char *filename, fileHandle_t *file, qboolean uniqueF
 
 	Com_DPrintf ("Can't find %s\n", filename);
 	
+	InterlockedExchange((LONG *)&fsh[*file].used, qfalse);
 	*file = 0;
 	return -1;
 }
@@ -2434,6 +2455,9 @@ void FS_Startup( const char *gameName )
 	int f;
 
 	Com_Printf( "----- FS_Startup -----\n" );
+#ifdef _XBOX
+	XBLog_Write("STEFX_FILE_OWNERSHIP: atomic FS/WF handle reservation enabled");
+#endif
 
 	fs_openorder = Cvar_Get( "fs_openorder", "0", 0 );
 	fs_debug = Cvar_Get( "fs_debug", "0", 0 );

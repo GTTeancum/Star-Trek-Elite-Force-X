@@ -28,3 +28,10 @@
 
 # Local-only licensed reference drops
 /third_party_private/
+
+# Local Python environment, research dumps and generated licensed SDK image
+/.venv/
+__pycache__/
+/notes/evidence/
+/code/win32/snd_dsp_image.h
+/notes/handoff_2026-09-12/tracked_changes.patch

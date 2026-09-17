@@ -582,6 +582,11 @@ void G_LoadBoltOns( void )
 	int helmetIndex = MAX_GAME_BOLTONS;
 #endif
 
+	// The Xbox game module stays resident across saves and deck transitions.
+	// Rebuild the level-owned attachment table instead of appending it again.
+	numBoltOns = 0;
+	memset(knownBoltOns, 0, sizeof(knownBoltOns));
+	boltOnList[0] = '\0';
 	gi.Printf( "Parsing %s\n", filename );
 	len = gi.FS_ReadFile( filename, (void **) &buffer );
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)

@@ -926,10 +926,12 @@ void R_LoadFaces( void *indexdata, int indexlen,
 					void *verts, int vertlen, 
 					void *surfaces, int surfacelen );
 void R_LoadPatchesStream( LumpStream *verts, void *surfaces, int surfacelen );
-void R_LoadTriSurfsStream( void *indexdata, int indexlen,
-					LumpStream *verts, void *surfaces, int surfacelen );
-void R_LoadFacesStream( void *indexdata, int indexlen,
-					LumpStream *verts, LumpStream *surfaces );
+void R_LoadTriSurfsStream( LumpStream *indexes, short *indexScratch,
+					LumpStream *verts, void *surfaces, int surfacelen,
+                    void *residentIndexes, int residentIndexLen );
+void R_LoadFacesStream( LumpStream *indexes, short *indexScratch,
+					LumpStream *verts, LumpStream *surfaces,
+                    void *residentIndexes, int residentIndexLen );
 void R_LoadFlares( void *surfaces, int surfacelen );
 extern void R_LoadShaders( void );
 extern void R_LoadLightmaps( void *data, int len, const char *psMapName );
@@ -945,6 +947,57 @@ extern void R_EFLoadRawDrawSurfacesFromBSP( const char *name, const efbspFile_t 
 #endif
 extern byte *fileBase;
 extern void UpdateLoadingAnimation();
+#if defined(STEFX_ELITE_FORCE_SP)
+// Retained phase durations: read, setup/checksum, lightmaps, shaders,
+// render surfaces, collision patches, remaining world data, cleanup, complete.
+__declspec(dllexport) unsigned int g_SPXBMapLoadPhases[9] = {0};
+// Packed path: setup, lightmaps, patches, triangles, faces, flares,
+// collision lumps, finish, complete. Raw and packed arrays are separate.
+__declspec(dllexport) unsigned int g_SPXBPackedLoadPhases[9] = {0};
+static unsigned int s_stefxMapLoadTick;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(_XBOX)
+// Six phase snapshots, ten DWORDs each. No additional memory reserved in retail.
+extern "C" {
+__declspec(dllexport) unsigned int g_SPXBIndexStreamProof[64] = {0};
+}
+static void CM_EFRecordIndexMemory(int phase)
+{
+    zmemstats_t stats;
+    MEMORYSTATUS physical;
+    Z_GetMemoryStats(&stats);
+    GlobalMemoryStatus(&physical);
+    unsigned int *out = g_SPXBIndexStreamProof + 4 + phase * 10;
+    out[0] = physical.dwAvailPhys;
+    out[1] = stats.zoneSize;
+    out[2] = stats.usedBytes;
+    out[3] = stats.freeBytes;
+    out[4] = stats.largestFreeBlock;
+    out[5] = stats.peakBytes;
+    out[6] = stats.overheadBytes;
+    out[7] = stats.filesysBytes;
+    out[8] = stats.bspBytes;
+    out[9] = stats.freeBlocks;
+    g_SPXBIndexStreamProof[3] |= 1u << phase;
+    XBLog_WriteCriticalf("STEFX_INDEX_MEMORY: phase=%d stream=%u physFree=%u zoneUsed=%d zoneFree=%d largest=%d peak=%d filesys=%d",
+        phase, g_SPXBIndexStreamProof[1], out[0], stats.usedBytes, stats.freeBytes,
+        stats.largestFreeBlock, stats.peakBytes, stats.filesysBytes);
+}
+#else
+#define CM_EFRecordIndexMemory(phase) ((void)0)
+#endif
+static void CM_EFRecordLoadPhase( int phase )
+{
+	unsigned int now = Sys_Milliseconds();
+	g_SPXBMapLoadPhases[phase] = now - s_stefxMapLoadTick;
+	s_stefxMapLoadTick = now;
+}
+static void CM_EFRecordPackedPhase( int phase )
+{
+	unsigned int now = Sys_Milliseconds();
+	g_SPXBPackedLoadPhases[phase] = now - s_stefxMapLoadTick;
+	s_stefxMapLoadTick = now;
+}
+#endif
 static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *checksum ) {
 	const int		*buf = NULL;
 	const int		*surfBuf = NULL;
@@ -1051,6 +1104,9 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 	{
 		efbspFile_t efbsp;
 		qboolean packedLumpsExist;
+		memset(g_SPXBMapLoadPhases, 0, sizeof(g_SPXBMapLoadPhases));
+		memset(g_SPXBPackedLoadPhases, 0, sizeof(g_SPXBPackedLoadPhases));
+		s_stefxMapLoadTick = Sys_Milliseconds();
 		memset(&efbsp, 0, sizeof(efbsp));
 		XBLF("EF: CM_LoadMap raw probe begin name='%s' clientload=%d", name, clientload);
 #ifdef _XBOX
@@ -1085,6 +1141,7 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 			qboolean rendererLightmapsLoaded;
 			int rendererLightmapMode;
 			zmemstats_t rawBspStats;
+			CM_EFRecordLoadPhase(0);
 
 			XBLF("EF: CM_LoadMap raw probe loaded name='%s' bytes=%d clientload=%d", name, efbsp.len, clientload);
 #ifdef _XBOX
@@ -1105,6 +1162,7 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 			XBLog_WriteCritical("STEFX_HW_BOOT: CM_LoadMap raw BSP counts ready");
 #endif
 			rendererLightmapsLoaded = qfalse;
+			CM_EFRecordLoadPhase(1);
 			rendererLightmapMode = 0;
 			if (R_LoadXboxOptimizedLightmaps(name))
 			{
@@ -1125,6 +1183,7 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 			}
 #ifdef _XBOX
 			XBLog_WriteCritical("STEFX_HW_BOOT: CM_LoadMap lightmaps complete");
+			CM_EFRecordLoadPhase(2);
 #endif
 			UpdateLoadingAnimation();
 			Z_GetMemoryStats(&rawBspStats);
@@ -1161,6 +1220,7 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 			}
 #ifdef _XBOX
 			XBLog_WriteCritical("STEFX_HW_BOOT: CM_LoadMap shaders complete");
+			CM_EFRecordLoadPhase(3);
 #endif
 			XBLF("EF: CM_LoadMap raw shaders loaded clientload=%d", clientload);
 			UpdateLoadingAnimation();
@@ -1183,7 +1243,9 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 				XBLog_WriteCritical("STEFX_HW_BOOT: CM_LoadMap streamed raw render surfaces complete");
 			}
 			XBLog_WriteCritical("STEFX_HW_BOOT: CM_LoadMap entering streamed raw collision patches");
+			CM_EFRecordLoadPhase(4);
 			CMod_LoadRawEFPatches(&efbsp, shaderCount, num_surfs);
+			CM_EFRecordLoadPhase(5);
 			XBLog_WriteCritical("STEFX_HW_BOOT: CM_LoadMap streamed raw collision patches complete");
 #else
 			if (!clientload)
@@ -1307,6 +1369,7 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 
 			TotalSubModels += cmg.numSubModels;
 			CM_InitBoxHull();
+			CM_EFRecordLoadPhase(6);
 			*checksum = last_checksum;
 			CM_FloodAreaConnections();
 			Q_strncpyz(cmg.name, name, sizeof(cmg.name));
@@ -1321,6 +1384,11 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 				clientload, cmg.name, cmg.numSubModels, cmg.numClusters, cmg.numAreas, last_checksum);
 			CM_EFLogMemoryStats(clientload ? "complete clientload" : "complete serverload", name);
 			EFBSP_FreeFile(&efbsp);
+			CM_EFRecordLoadPhase(7);
+			g_SPXBMapLoadPhases[8] = 1;
+			XBLog_WriteCriticalf("STEFX_MAP_LOAD_PHASES: read=%u setup=%u lightmaps=%u shaders=%u surfaces=%u patches=%u world=%u cleanup=%u",
+				g_SPXBMapLoadPhases[0], g_SPXBMapLoadPhases[1], g_SPXBMapLoadPhases[2], g_SPXBMapLoadPhases[3],
+				g_SPXBMapLoadPhases[4], g_SPXBMapLoadPhases[5], g_SPXBMapLoadPhases[6], g_SPXBMapLoadPhases[7]);
 			return;
 		}
 
@@ -1414,6 +1482,7 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 
 	strcpy(lmName, name);
 #ifdef STEFX_ELITE_FORCE_SP
+	CM_EFRecordPackedPhase(0);
 #ifdef _XBOX
 	XBLog_WriteRingMarkerf("STEFX_RETAIL_LUMPS: CM before optimized lightmaps map='%s'", lmName);
 #endif
@@ -1423,6 +1492,7 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 	}
 #ifdef _XBOX
 	XBLog_WriteRingMarker("STEFX_RETAIL_LUMPS: CM after optimized lightmaps");
+	CM_EFRecordPackedPhase(1);
 #endif
 #else
 	outputLump.load(stripName, "lightmaps");
@@ -1484,10 +1554,37 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 
 		patches.clear();
 		g_SPXBPackedMapPhase = 0x504D0013;
+		CM_EFRecordPackedPhase(2);
 
-		Lump indexes;
-		g_SPXBPackedMapPhase = 0x504D0014;
-		indexes.load(stripName, "indexes");
+		LumpStream indexes;
+        Lump residentIndexes;
+        qboolean streamIndexes = qtrue;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(_XBOX)
+        // Diagnostic-only A/B: same binary, same authored map and parser.
+        streamIndexes = Cvar_Get("stefx_index_stream", "1", 0)->integer ? qtrue : qfalse;
+        memset(g_SPXBIndexStreamProof, 0, sizeof(g_SPXBIndexStreamProof));
+        g_SPXBIndexStreamProof[0] = 0x49534D31;
+        g_SPXBIndexStreamProof[1] = streamIndexes;
+#endif
+        CM_EFRecordIndexMemory(0);
+        // Packed surface counts use 12 bits: 8 KiB covers every index range.
+        g_SPXBPackedMapPhase = 0x504D0014;
+        if (streamIndexes)
+        {
+            if (!indexes.open(stripName, "indexes") || (indexes.len & 1))
+                Com_Error(ERR_DROP, "CM_LoadMap: invalid packed index stream for %s", name);
+        }
+        else
+            residentIndexes.load(stripName, "indexes");
+        const int indexFileBytes = streamIndexes ? indexes.len : residentIndexes.len;
+        short *indexScratch = streamIndexes ?
+            (short *)Z_Malloc(8192, TAG_TEMP_WORKSPACE, qfalse, 32) : NULL;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(_XBOX)
+        g_SPXBIndexStreamProof[2] = indexFileBytes;
+#endif
+        CM_EFRecordIndexMemory(1);
+        XBLog_WriteCriticalf("STEFX_INDEX_STREAM: map='%s' enabled=%d fileBytes=%d scratchBytes=%d begin",
+            name, streamIndexes, indexFileBytes, streamIndexes ? 8192 : 0);
 		g_SPXBPackedMapPhase = 0x504D0015;
 
 		Lump trisurfs;
@@ -1498,12 +1595,14 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 		UpdateLoadingAnimation();
 		g_SPXBPackedMapPhase = 0x504D0018;
 
-		R_LoadTriSurfsStream(indexes.data, indexes.len,
-			&verts, trisurfs.data, trisurfs.len);
+		R_LoadTriSurfsStream(streamIndexes ? &indexes : NULL, indexScratch,
+			&verts, trisurfs.data, trisurfs.len, residentIndexes.data, residentIndexes.len);
 		g_SPXBPackedMapPhase = 0x504D0019;
 
 		trisurfs.clear();
+        CM_EFRecordIndexMemory(2);
 		g_SPXBPackedMapPhase = 0x504D001A;
+		CM_EFRecordPackedPhase(3);
 	
 		UpdateLoadingAnimation();
 		g_SPXBPackedMapPhase = 0x504D001B;
@@ -1516,10 +1615,18 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 		}
 		g_SPXBPackedMapPhase = 0x504D001D;
 
-		R_LoadFacesStream(indexes.data, indexes.len,
-			&verts, &faces);
+		R_LoadFacesStream(streamIndexes ? &indexes : NULL, indexScratch,
+			&verts, &faces, residentIndexes.data, residentIndexes.len);
 		g_SPXBPackedMapPhase = 0x504D001E;
 		faces.close();
+        CM_EFRecordIndexMemory(3);
+        XBLog_WriteCriticalf("STEFX_INDEX_STREAM: map='%s' enabled=%d fileBytes=%d done",
+            name, streamIndexes, indexFileBytes);
+        indexes.close();
+        if (indexScratch) Z_Free(indexScratch);
+        residentIndexes.clear();
+        CM_EFRecordIndexMemory(4);
+        CM_EFRecordPackedPhase(4);
 
 		UpdateLoadingAnimation();
 		g_SPXBPackedMapPhase = 0x504D001F;
@@ -1532,6 +1639,8 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 		R_LoadFlares(flares.data, flares.len);
 		g_SPXBPackedMapPhase = 0x504D0022;
 		verts.close();
+        CM_EFRecordIndexMemory(5);
+		CM_EFRecordPackedPhase(5);
 	}
 	
 	UpdateLoadingAnimation();
@@ -1604,6 +1713,7 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 	g_SPXBPackedMapPhase = 0x504D0042;
 
 	TotalSubModels += cmg.numSubModels;
+	CM_EFRecordPackedPhase(6);
 	
 	CM_InitBoxHull ();
 	g_SPXBPackedMapPhase = 0x504D0043;
@@ -1627,6 +1737,11 @@ static void CM_LoadMap_Actual( const char *name, qboolean clientload, int *check
 #endif
 	CM_CleanLeafCache();
 	g_SPXBPackedMapPhase = 0x504D0046;
+	CM_EFRecordPackedPhase(7);
+	g_SPXBPackedLoadPhases[8] = 1;
+	XBLog_WriteCriticalf("STEFX_PACKED_LOAD_PHASES: setup=%u lightmaps=%u patches=%u triangles=%u faces=%u flares=%u collision=%u finish=%u",
+		g_SPXBPackedLoadPhases[0], g_SPXBPackedLoadPhases[1], g_SPXBPackedLoadPhases[2], g_SPXBPackedLoadPhases[3],
+		g_SPXBPackedLoadPhases[4], g_SPXBPackedLoadPhases[5], g_SPXBPackedLoadPhases[6], g_SPXBPackedLoadPhases[7]);
 }
 
 // need a wrapper function around this because of multiple returns, need to ensure bool is correct...
@@ -1925,6 +2040,14 @@ void CM_ModelBounds( clipMap_t &cmg, clipHandle_t model, vec3_t mins, vec3_t max
 	VectorCopy( cmod->mins, mins );
 	VectorCopy( cmod->maxs, maxs );
 }
+
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+// Hard-linked EF cgame bridge: collision-model bounds, not renderer bounds.
+void CM_STEFX_CoopModelBounds(clipHandle_t model, vec3_t mins, vec3_t maxs) {
+	cmodel_t *cmod=CM_ClipHandleToModel(model);
+	VectorCopy(cmod->mins,mins); VectorCopy(cmod->maxs,maxs);
+}
+#endif
 
 /*
 ===================

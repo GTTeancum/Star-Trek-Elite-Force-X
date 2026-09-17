@@ -610,7 +610,26 @@ static int Z_LargestFreeBlock_NoLock(void)
 	return largest;
 }
 
+#ifdef _XBOX
+extern "C" volatile unsigned int g_SPXBPhysTotal;
+extern "C" volatile unsigned int g_SPXBPhysAvail;
+#endif
+
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+// Completed observations, not a continuous allocator high-water mark. The zone
+// mutex serializes writers; each slot publishes its serial last. Keep caller
+// and guest time so a host poll cannot mistake a stale value for a new sample.
+extern "C" {
+volatile unsigned int g_SPXBMemoryObservations[64][20] = { 0 };
+volatile unsigned int g_SPXBMemoryObservationSerial = 0;
+}
+#endif
+
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+static void Z_GetMemoryStatsObserved(zmemstats_t *stats, unsigned int caller, unsigned int assetContext)
+#else
 void Z_GetMemoryStats(zmemstats_t *stats)
+#endif
 {
 	if (!stats)
 	{
@@ -624,6 +643,15 @@ void Z_GetMemoryStats(zmemstats_t *stats)
 
 #ifndef _GAMECUBE
 	WaitForSingleObject(s_Mutex, INFINITE);
+#endif
+
+#ifdef _XBOX
+	{
+		MEMORYSTATUS physStatus;
+		GlobalMemoryStatus(&physStatus);
+		g_SPXBPhysTotal = (unsigned int)physStatus.dwTotalPhys;
+		g_SPXBPhysAvail = (unsigned int)physStatus.dwAvailPhys;
+	}
 #endif
 
 	memset(stats, 0, sizeof(*stats));
@@ -641,10 +669,52 @@ void Z_GetMemoryStats(zmemstats_t *stats)
 	stats->soundRawBytes = s_Stats.m_SizesPerTag[TAG_SND_RAWDATA];
 	stats->filesysBytes = s_Stats.m_SizesPerTag[TAG_FILESYS];
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	{
+		const unsigned int serial = g_SPXBMemoryObservationSerial + 1;
+		volatile unsigned int *row = g_SPXBMemoryObservations[(serial - 1) % 64];
+		row[0] = 0;
+		row[1] = 2;
+		row[2] = GetTickCount();
+		row[3] = caller;
+		row[4] = g_SPXBPhysTotal;
+		row[5] = g_SPXBPhysAvail;
+		row[6] = stats->zoneSize;
+		row[7] = stats->usedBytes;
+		row[8] = stats->overheadBytes;
+		row[9] = stats->peakBytes;
+		row[10] = stats->freeBytes;
+		row[11] = stats->freeBlocks;
+		row[12] = stats->largestFreeBlock;
+		row[13] = stats->modelMd3Bytes;
+		row[14] = stats->modelGlmBytes;
+		row[15] = stats->modelGlaBytes;
+		row[16] = stats->bspBytes;
+		row[17] = stats->soundRawBytes;
+		row[18] = stats->filesysBytes;
+		row[19] = assetContext;
+		row[0] = serial;
+		g_SPXBMemoryObservationSerial = serial;
+	}
+#endif
+
 #ifndef _GAMECUBE
 	ReleaseMutex(s_Mutex);
 #endif
 }
+
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+void Z_GetMemoryStats(zmemstats_t *stats)
+{
+	Z_GetMemoryStatsObserved(stats, (unsigned int)_ReturnAddress(), 0);
+}
+
+// Context belongs to this call, never to a shared last-file variable.
+void Z_GetMemoryStatsForAsset(zmemstats_t *stats, unsigned int assetContext)
+{
+	Z_GetMemoryStatsObserved(stats, (unsigned int)_ReturnAddress(), assetContext);
+}
+#endif
 
 qboolean Z_WouldAllocFit(int iSize, memtag_t eTag, int iAlign, int *realSize, int *alignPad, int *largestFreeBlock)
 {
@@ -723,6 +793,22 @@ qboolean Z_WouldAllocFit(int iSize, memtag_t eTag, int iAlign, int *realSize, in
 
 	return fblock ? qtrue : qfalse;
 }
+
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+// Model compaction is optional. Keep the fit check and allocation under the
+// same recursive mutex so a concurrent allocation cannot invalidate the check.
+void *Z_TryMalloc(int size, memtag_t tag, int alignment)
+{
+	if (!s_Initialized) Com_InitZoneMemory();
+	DWORD wait = WaitForSingleObject(s_Mutex, INFINITE);
+	if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED_0) return NULL;
+	void *result = NULL;
+	if (Z_WouldAllocFit(size, tag, alignment, NULL, NULL, NULL))
+		result = Z_Malloc(size, tag, qfalse, alignment);
+	ReleaseMutex(s_Mutex);
+	return result;
+}
+#endif
 
 static bool Z_ValidateFree(void)
 {
@@ -1534,6 +1620,21 @@ static void Z_Coalasce(ZoneFreeBlock* pBlock)
 #endif
 
 	memtag_t tag = Z_GetTag(header);
+
+#ifdef _XBOX
+	// TAG_ALL is a selector for bulk frees, never an allocation tag. A freed
+	// block's address in place of its header must not enter the free list again.
+	if (tag == TAG_ALL || tag >= TAG_COUNT)
+	{
+		char message[192];
+		_snprintf(message, sizeof(message), "STEFX_ZONE_INVALID_FREE ptr=%p header=%08x caller=%p tag=%d\n",
+			pvAddress, *header, _ReturnAddress(), tag);
+		message[sizeof(message) - 1] = 0;
+		XBLog_Print(message);
+		Com_Error(ERR_FATAL, "%s", message);
+		Z_FREE_RETURN(0);
+	}
+#endif
 
 	if (tag != TAG_STATIC)
 	{

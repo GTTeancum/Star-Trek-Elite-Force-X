@@ -22,6 +22,7 @@
 #include "..\game\speakers.h"
 #ifdef _XBOX
 #include "../../code/win32/xb_log.h"
+extern "C" void STEFX_VvTravelTrace(unsigned int, unsigned int, unsigned int, unsigned int);
 #endif
 
 extern int ICARUS_LinkEntity( int entID, CSequencer *sequencer, CTaskManager *taskManager );
@@ -1377,14 +1378,22 @@ static CSequencer *Q3_GetEntityByName( const char *name )
 	ei = ICARUS_EntList.find( strupr( (char *) temp ) );
 
 	if ( ei == ICARUS_EntList.end() )
-		return NULL;
+    {
+#ifdef _XBOX
+        STEFX_VvTravelTrace(4, 0xffffffff, 0, level.time);
+#endif
+        return NULL;
+    }
 
 	ent = &g_entities[(*ei).second];
 
 	if (ent == NULL)
 		return NULL;
 
-	return ent->sequencer;
+#ifdef _XBOX
+    STEFX_VvTravelTrace(4, ent->s.number, (unsigned int)ent->sequencer, level.time);
+#endif
+    return ent->sequencer;
 }
 
 /*
@@ -4476,7 +4485,10 @@ static void Q3_Use( int entID, const char *target )
 		return;
 	}
 
-	G_UseTargets2(ent, ent, target);
+#ifdef _XBOX
+    STEFX_VvTravelTrace(7, entID, !Q_stricmp(target, "bridge2"), level.time);
+#endif
+    G_UseTargets2(ent, ent, target);
 }
 
 
@@ -6892,7 +6904,10 @@ static void Q3_SetPlayerLocked( int entID, qboolean locked )
 		level.time,
 		level.mapname);
 #endif
-	player_locked = locked;
+#ifdef _XBOX
+    STEFX_VvTravelTrace(6, entID, locked, level.time);
+#endif
+    player_locked = locked;
 	if ( ent && ent->client )
 	{//stop him too
 		VectorClear(ent->client->ps.velocity);

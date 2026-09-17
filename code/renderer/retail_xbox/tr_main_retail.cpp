@@ -31,6 +31,99 @@ STEFX_RETAIL_NAMESPACE_BEGIN
 
 trGlobals_t		tr;
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && !defined(STEFX_SP_HOSTED_MP)
+// Retain the first sixteen distinct missing-model submissions across reloads.
+// Header: version, records, submissions, overflow. Records: handle, entity,
+// frame, model count, render flags, and three raw origin floats. Rendering stays unchanged.
+extern "C" volatile unsigned int g_SPXBVvMissingModels[132] = {1, 0, 0, 0};
+static void STEFX_RecordMissingModel(const trRefEntity_t *ent)
+{
+    ++g_SPXBVvMissingModels[2];
+    unsigned int count = g_SPXBVvMissingModels[1];
+    for (unsigned int i = 0; i < count; ++i)
+        if (g_SPXBVvMissingModels[4+i*8] == (unsigned int)ent->e.hModel &&
+            g_SPXBVvMissingModels[5+i*8] == (unsigned int)ent->e.number) return;
+    if (count >= 16) { ++g_SPXBVvMissingModels[3]; return; }
+    unsigned int base = 4 + count*8;
+    g_SPXBVvMissingModels[base] = ent->e.hModel;
+    g_SPXBVvMissingModels[base+1] = ent->e.number;
+    g_SPXBVvMissingModels[base+2] = tr.frameCount;
+    g_SPXBVvMissingModels[base+3] = tr.numModels;
+    g_SPXBVvMissingModels[base+4] = ent->e.renderfx;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        unsigned int bits;
+        memcpy(&bits, &ent->e.origin[axis], sizeof(bits));
+        g_SPXBVvMissingModels[base+5+axis] = bits;
+    }
+    g_SPXBVvMissingModels[1] = count+1;
+    XBLF("STEFX_VV_MISSING_MODEL: entity=%d handle=%d models=%d frame=%d name='%s' origin=(%g,%g,%g)",
+        ent->e.number, ent->e.hModel, tr.numModels, tr.frameCount,
+        tr.currentModel->name, ent->e.origin[0], ent->e.origin[1], ent->e.origin[2]);
+}
+#endif
+
+#include "stefx_fx_bounds.h"
+#include "stefx_coop_model_pvs.h"
+
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
+// STEFX_FX_PVS_BEGIN
+extern "C" volatile unsigned int g_SPXBFxPvs[4] = {0};
+static bool STEFX_FxTouchesVisibleLeaf(const float bounds[2][3], const mnode_t *root,
+    const cplane_t *planes, int planeCount, int visibleFrame) {
+    const mnode_t *stack[32];
+    int pending = 0, visited = 0;
+    stack[pending++] = root;
+    while (pending) {
+        const mnode_t *node = stack[--pending];
+        if (!node || ++visited > 128) { ++g_SPXBFxPvs[2]; return true; }
+        ++g_SPXBFxPvs[3];
+        if (node->visframe != visibleFrame) continue;
+        if (node->contents != -1) return true;
+        if (node->planeNum >= (unsigned int)planeCount) { ++g_SPXBFxPvs[2]; return true; }
+        const cplane_t &plane = planes[node->planeNum];
+        float lo = -plane.dist, hi = -plane.dist;
+        for (int axis = 0; axis < 3; ++axis) {
+            lo += plane.normal[axis] * bounds[plane.normal[axis] >= 0.0f ? 0 : 1][axis];
+            hi += plane.normal[axis] * bounds[plane.normal[axis] >= 0.0f ? 1 : 0][axis];
+        }
+        // Touching a partition must search both sides. Long beams can touch
+        // visible space even when neither endpoint is in a visible leaf.
+        if (!(lo > -1.0e9f && hi < 1.0e9f && lo <= hi) || pending > 29) {
+            ++g_SPXBFxPvs[2]; return true;
+        }
+        if (hi >= -1.0f) stack[pending++] = node->children[0];
+        if (lo <= 1.0f) stack[pending++] = node->children[1];
+    }
+    return false;
+}
+static bool STEFX_CullFxOutsidePvs(const refEntity_t &e) {
+    static cvar_t *enabled;
+    if (!enabled) enabled = Cvar_Get("r_efFxPvs", "0", 0);
+    if (!enabled->integer || !tr.viewParms.stefxSplitView || tr.viewParms.isPortal ||
+        !tr.world || !tr.world->nodes || !tr.world->planes || tr.viewCluster < 0 ||
+        tr.world->nodes[0].visframe != tr.visCount || !r_drawworld->integer ||
+        r_nocull->integer || r_novis->integer || r_lockpvs->integer ||
+        (tr.refdef.rdflags & RDF_NOWORLDMODEL) ||
+        (e.renderfx & (RF_NODEPTH | RF_DEPTHHACK | RF_DISTORTION))) return false;
+    float bounds[2][3];
+    if (!STEFX_FxBounds(e, bounds)) return false;
+    shader_t *shader = R_GetShaderByHandle(e.customShader);
+    if (!shader) return false;
+    if (shader->remappedShader) shader = shader->remappedShader;
+    // Some world-positioned overlays intentionally draw through walls.
+    for (int stage = 0; stage < shader->numUnfoggedPasses; ++stage)
+        if (shader->stages[stage].stateBits & GLS_DEPTHTEST_DISABLE) return false;
+    ++g_SPXBFxPvs[0];
+    if (STEFX_FxTouchesVisibleLeaf(bounds, tr.world->nodes, tr.world->planes,
+        tr.world->numplanes, tr.visCount)) return false;
+    if (++g_SPXBFxPvs[1] == 1u)
+        XBLog_WriteCriticalf("STEFX_FX_PVS: active cluster=%d type=%d", tr.viewCluster, e.reType);
+    return true;
+}
+// STEFX_FX_PVS_END
+#endif
+
 static float	s_flipMatrix[16] = {
 	// convert from our coordinate system (looking down X)
 	// to OpenGL's coordinate system (looking down -Z)
@@ -1417,6 +1510,9 @@ R_AddDrawSurf
 */
 void R_AddDrawSurf( const surfaceType_t *surface, const shader_t *shader, 
 				   int fogIndex, int dlightMap ) {
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	if (STEFX_CoopSkipHiddenSurface(surface, shader)) return;
+#endif
 	int			index;
 
 	// instead of checking for overflow, we just mask the index
@@ -1576,6 +1672,9 @@ void R_AddEntitySurfaces (void) {
 	      tr.currentEntityNum < tr.refdef.num_entities; 
 		  tr.currentEntityNum++ ) {
 		ent = tr.currentEntity = &tr.refdef.entities[tr.currentEntityNum];
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	s_coopModelOutsidePvs = false;
+#endif
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 		if ( R_STEFX_ShouldHideHolomatchSplitWorldPhaser( ent, stefxHolomatchSplitActive ) ) {
@@ -1671,6 +1770,12 @@ void R_AddEntitySurfaces (void) {
 
 		ent->needDlights = qfalse;
 
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
+		if (tr.viewParms.stefxSplitView && STEFX_FxCullEnabled() &&
+			STEFX_CullExtendedFx(ent->e)) continue;
+		if (STEFX_CullFxOutsidePvs(ent->e)) continue;
+#endif
+
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 		if ( ( ( tr.viewParms.stefxSplitView && stefxSplitEconomyActive ) ||
 				stefxSpOffscreenFxCull ) &&
@@ -1680,7 +1785,11 @@ void R_AddEntitySurfaces (void) {
 #endif
 			) )
 		{
-			if ( R_CullPointAndRadius( ent->e.origin,
+			if (
+#if defined(STEFX_SP_HOSTED_MP)
+				!STEFX_FxCullEnabled() &&
+#endif
+				R_CullPointAndRadius( ent->e.origin,
 				ent->e.radius > 0.0f ? ent->e.radius : 1.0f ) == CULL_OUT )
 			{
 				++stefxSplitOffscreenEffectsCulled;
@@ -1759,6 +1868,9 @@ void R_AddEntitySurfaces (void) {
 			STEFX_RETAIL_SCOPE R_RotateForEntity( ent, &tr.viewParms, &tr.or );
 
 			tr.currentModel = R_GetModelByHandle( ent->e.hModel );
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	s_coopModelOutsidePvs = STEFX_CoopModelOutsidePvs(ent, tr.currentModel);
+#endif
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && defined(STEFX_SP_HOSTED_MP)
 			if ( tr.viewParms.stefxSplitThreePlusEconomy && tr.currentModel &&
 				!Q_stricmpn( tr.currentModel->name, "models/powerups/trek/", 21 ) &&
@@ -1844,6 +1956,9 @@ Ghoul2 Insert Start
   						break;
   					}
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && !defined(STEFX_SP_HOSTED_MP)
+					STEFX_RecordMissingModel(ent);
+#endif
 					R_AddDrawSurf( &entitySurface, tr.defaultShader, 0, false );
 					break;
 /*
@@ -1862,6 +1977,9 @@ Ghoul2 Insert End
 	}
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+#if !defined(STEFX_SP_HOSTED_MP)
+	s_coopModelOutsidePvs = false;
+#endif
 	if ( ( stefxSplitOffscreenEffectsCulled > 0 ||
 		stefxSplitDistantEffectsCulled > 0 ||
 		stefxSplitDistantPickupsCulled > 0 ) &&

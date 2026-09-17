@@ -6,6 +6,24 @@
 #include "../../code/win32/xb_log.h"
 #endif
 
+#ifdef _XBOX
+// Bounded diagnostic evidence; enabled only by explicit ICARUS debugging.
+extern "C" volatile unsigned int g_SPXBVvTravelTrace[68] = { 1, 0, 0, 0 };
+static bool s_vvTravelTraceActive = false;
+extern "C" void STEFX_VvTravelTrace(unsigned int event, unsigned int a, unsigned int b, unsigned int c)
+{
+    if (!s_vvTravelTraceActive) return;
+    unsigned int index = g_SPXBVvTravelTrace[1];
+    ++g_SPXBVvTravelTrace[2];
+    if (index >= 16) return;
+    g_SPXBVvTravelTrace[4 + index*4] = event;
+    g_SPXBVvTravelTrace[5 + index*4] = a;
+    g_SPXBVvTravelTrace[6 + index*4] = b;
+    g_SPXBVvTravelTrace[7 + index*4] = c;
+    g_SPXBVvTravelTrace[1] = index + 1;
+}
+#endif
+
 ICARUS_Instance		*iICARUS;
 bufferlist_t		ICARUS_BufferList;
 entlist_t			ICARUS_EntList;
@@ -63,6 +81,13 @@ Runs the script by the given name
 */
 int ICARUS_RunScript( gentity_t *ent, const char *name )
 {
+#ifdef _XBOX
+    if (name && strstr(name, "deck04/bridge2") != NULL && g_ICARUSDebug->integer >= 4)
+    {
+        s_vvTravelTraceActive = true;
+        STEFX_VvTravelTrace(1, ent->s.number, (unsigned int)ent->sequencer, level.time);
+    }
+#endif
 	char *buf;
 	int len;
 #ifdef _XBOX
@@ -97,6 +122,9 @@ int ICARUS_RunScript( gentity_t *ent, const char *name )
 
 	len = ICARUS_GetScript (name,  &buf );
 #ifdef _XBOX
+    STEFX_VvTravelTrace(2, ent->s.number, len, level.time);
+#endif
+#ifdef _XBOX
 	if (shouldLog)
 	{
 		XBLF("STEFX: ICARUS_RunScript after get name='%s' len=%d buf=%p", name ? name : "", len, buf);
@@ -119,7 +147,10 @@ int ICARUS_RunScript( gentity_t *ent, const char *name )
 		return false;
 	}
 
-	Q3_DebugPrint( WL_VERBOSE, "Script %s executed by %s %s\n", (char *) name, ent->classname, ent->targetname );
+	#ifdef _XBOX
+    STEFX_VvTravelTrace(3, ent->s.number, 0, level.time);
+#endif
+    Q3_DebugPrint( WL_VERBOSE, "Script %s executed by %s %s\n", (char *) name, ent->classname, ent->targetname );
 #ifdef _XBOX
 	if (shouldLog)
 	{

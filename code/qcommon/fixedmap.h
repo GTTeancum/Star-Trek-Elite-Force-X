@@ -96,27 +96,20 @@ public:
 	//Binary search, items must have been sorted!
 	T *Find(const U &key)
 	{
-		int i;
-		int high;
-		int low;
-
-		for(low = -1, high = numItems; high - low > 1; ) {
-			i = (high + low) / 2;
-			if(key < items[i].key) {
+		// Keep every probe inside [low, high). Empty maps and missing keys
+		// must return NULL without probing either neighbor outside the array.
+		unsigned int low = 0;
+		unsigned int high = numItems;
+		while (low < high) {
+			unsigned int i = low + (high - low) / 2;
+			if (key < items[i].key) {
 				high = i;
-			} else if(key > items[i].key) {
-				low = i;
+			} else if (key > items[i].key) {
+				low = i + 1;
 			} else {
 				return &items[i].data;
 			}
 		}
-
-		if(items[i+1].key == key) {
-			return &items[i+1].data;
-		} else if(items[i-1].key == key) {
-			return &items[i-1].data;
-		}
-
 		return NULL;
 	}
 

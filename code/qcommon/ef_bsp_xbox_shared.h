@@ -165,7 +165,7 @@ static qboolean EFBSP_BuildXboxPatchName(const char *name, char *out, int outSiz
 	}
 
 	base = name + 5;
-	if (strchr(base, '/') || strchr(base, '\\'))
+	if (strstr(base, "..") || base[0] == '/' || strchr(base, '\\'))
 	{
 		return qfalse;
 	}

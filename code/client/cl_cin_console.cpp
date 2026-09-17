@@ -263,6 +263,14 @@ e_status CIN_RunCinematic (int handle)
 		g_SPXBCinStatus = (unsigned int)bVideo.GetStatus();
 #endif
 		XBLog_Write("JA: CIN_RunCinematic BinkVideo::Start succeeded");
+#ifdef _XBOX
+		if (!shader)
+		{
+			extern void CL_STEFX_ExcludeBlockingMovieFromFps(void);
+			CL_STEFX_ExcludeBlockingMovieFromFps();
+			XBLF("STEFX_FPS_CONTEXT: exclude blocking movie '%s'", cinFiles[handle].filename);
+		}
+#endif
 
 #ifdef _XBOX
 		// Keep these phase writes independent of formatted logging.  If movie

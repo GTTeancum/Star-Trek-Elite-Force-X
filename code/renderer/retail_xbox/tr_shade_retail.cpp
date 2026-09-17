@@ -16,7 +16,7 @@
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 #include "../../win32/xb_log.h"
 #endif
-#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
 #include "../../win32/xb_perf.h"
 #endif
 
@@ -32,6 +32,9 @@ bool styleUpdated[MAX_LIGHT_STYLES];
 */
 
 shaderCommands_t	tess;
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP) || defined(STEFX_HW_FRAME_DIAGNOSTICS))
+extern bool g_stefxWorldBasePass;
+#endif
 static qboolean	setArraysOnce;
 
 color4ub_t	styleColors[MAX_LIGHT_STYLES];
@@ -52,6 +55,7 @@ int R_STEFX_FogModeForView( void )
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && defined(STEFX_SP_HOSTED_MP)
 static int s_stefxShaderTraceDumpedCount;
 static qboolean s_stefxShaderTraceStarted;
+static cvar_t *s_stefxShaderTrace;
 
 static void R_STEFX_ShaderTraceDumpImage( const shader_t *shader, int pass, int bundleIndex,
 	int animationIndex, const image_t *image )
@@ -125,7 +129,16 @@ static void R_STEFX_ShaderTraceDumpRegistered( void )
 {
 	int shaderIndex;
 
-	if ( !Cvar_VariableIntegerValue( "stefx_hm_shader_trace" ) )
+	// Surface batches are a hot path. Register once, but read the live value
+	// so console toggles still take effect immediately. Cvar_Get also promotes
+	// a user-created value to a registered cvar that survives cvar_restart.
+	if ( !s_stefxShaderTrace )
+	{
+		s_stefxShaderTrace = Cvar_Get( "stefx_hm_shader_trace", "0", 0 );
+		XBLog_WriteCriticalf( "STEFX_HM_SHADER_TRACE_GATE: cached live cvar enabled=%d",
+			s_stefxShaderTrace->integer );
+	}
+	if ( !s_stefxShaderTrace->integer )
 	{
 		return;
 	}
@@ -216,7 +229,7 @@ static void R_STEFX_ShaderTraceDumpRegistered( void )
 }
 #endif
 
-#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
 static qboolean R_STEFX_IsSplitEconomyStageSkipped( int stage,
 	const shaderStage_t *shaderStage );
 static int R_STEFX_SplitEconomyEffectivePassCount( const shaderCommands_t *input );
@@ -709,6 +722,15 @@ void CIN_UploadCinematic(int handle);
 
 // de-static'd because tr_quicksprite wants it
 void R_BindAnimatedImage( const textureBundle_t *bundle ) {
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+	static cvar_t *diffuseOnly = NULL;
+	if (!diffuseOnly) diffuseOnly = Cvar_Get("stefx_diag_diffuse_only", "0", 0);
+	if (diffuseOnly->integer && bundle->isLightmap)
+	{
+		GL_Bind(tr.whiteImage);
+		return;
+	}
+#endif
 	int		index;
 
 /*
@@ -836,6 +858,13 @@ to overflow.
 void RB_BeginSurface( shader_t *shader, int fogNum ) {
 	shader_t *state = (shader->remappedShader) ? shader->remappedShader : shader;
 
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+	STEFX_WorldVerticesBeginBatch();
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	STEFX_CoopModelBeginBatch();
+#endif
+#endif
+
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && defined(STEFX_SP_HOSTED_MP)
 	R_STEFX_ShaderTraceDumpRegistered();
 #endif
@@ -873,6 +902,10 @@ t0 = most upstream according to spec
 t1 = most downstream according to spec
 ===================
 */
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+extern "C" __declspec(dllexport) volatile unsigned int g_SPXBStasisDraw[40] = {0};
+#endif
+
 static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	shaderStage_t	*pStage;
 
@@ -910,7 +943,36 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 
 	R_BindAnimatedImage( &pStage->bundle[1] );
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+	int stasisSlot = -1;
+	if (!Q_stricmp(tess.shader->name, "textures/stasis/scum_256")) stasisSlot = 0;
+	else if (!Q_stricmp(tess.shader->name, "textures/stasis/m_stasiswall_b")) stasisSlot = 1;
+	if (stasisSlot >= 0)
+	{
+		volatile unsigned int *row = g_SPXBStasisDraw + stasisSlot * 20;
+		++row[0];
+		row[1] = pStage->bundle[0].image ? pStage->bundle[0].image->texnum : 0;
+		row[2] = pStage->bundle[1].image ? pStage->bundle[1].image->texnum : 0;
+		row[3] = pStage->bundle[0].tcGen; row[4] = pStage->bundle[1].tcGen;
+		row[5] = pStage->bundle[0].isLightmap; row[6] = pStage->bundle[1].isLightmap;
+		row[7] = input->numVertexes; row[8] = input->numIndexes;
+		row[9] = tess.shader->multitextureEnv; row[10] = r_lightmap->integer;
+		row[11] = stage; row[12] = tess.shader->index;
+		for (int uv = 0; uv < 2; ++uv)
+		{
+			union { float f; unsigned int u; } bits;
+			bits.f = input->svars.texcoords[0][0][uv]; row[13+uv] = bits.u;
+			bits.f = input->svars.texcoords[1][0][uv]; row[15+uv] = bits.u;
+		}
+	}
+#endif
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP) || defined(STEFX_HW_FRAME_DIAGNOSTICS))
+	g_stefxWorldBasePass = true;
+#endif
 	R_DrawElements( input->numIndexes, input->indexes );
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP) || defined(STEFX_HW_FRAME_DIAGNOSTICS))
+	g_stefxWorldBasePass = false;
+#endif
 
 	//
 	// disable texturing on TEXTURE1, then select TEXTURE0
@@ -2921,7 +2983,13 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 #ifdef _XBOX
 			g_SPXBEndSurfaceStage = 0x49543400 | (unsigned int)(stage & 0xff); /* 'IT4x': indexed submit */
 #endif
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP) || defined(STEFX_HW_FRAME_DIAGNOSTICS))
+			g_stefxWorldBasePass = true;
+#endif
 			R_DrawElements( input->numIndexes, input->indexes );	
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP) || defined(STEFX_HW_FRAME_DIAGNOSTICS))
+			g_stefxWorldBasePass = false;
+#endif
 #ifdef _XBOX
 			g_SPXBEndSurfaceStage = 0x49543500 | (unsigned int)(stage & 0xff); /* 'IT5x': indexed submit returned */
 #endif
@@ -3153,7 +3221,7 @@ void RB_StageIteratorGeneric( void )
 */
 void RB_EndSurface( void ) {
 	shaderCommands_t *input;
-#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
 	const qboolean stefxShaderCostSample = R_STEFX_BeginShaderCostSample();
 	unsigned __int64 stefxShaderCostStart = 0;
 #endif
@@ -3285,7 +3353,7 @@ void RB_EndSurface( void ) {
 		g_SPXBHMScoreSubmitArmed = 1u;
 	}
 #endif
-#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
 	if ( stefxShaderCostSample )
 	{
 		stefxShaderCostStart = STEFX_XboxReadTsc();
@@ -3298,7 +3366,7 @@ void RB_EndSurface( void ) {
 #ifdef _XBOX
 	g_SPXBEndSurfaceStage = 0x45530051; /* 'ES51': iterator complete */
 #endif
-#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
 	if ( stefxShaderCostSample )
 	{
 		R_STEFX_RecordShaderCost( input, STEFX_XboxElapsedCycles( stefxShaderCostStart ) );

@@ -12,6 +12,9 @@
 #include "../MatComp.h"
 
 #ifdef _XBOX
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+extern "C" { volatile unsigned int g_SPXBViewAspectProof[12] = {0}; }
+#endif
 extern "C" volatile unsigned int g_SPXBSplitSlotActive;
 extern "C" volatile unsigned int g_SPXBHMSplitRenderSerial[4];
 extern "C" volatile unsigned int g_SPXBHMSplitRenderArmedPlayers;
@@ -863,6 +866,26 @@ static qboolean R_STEFX_ShouldRenderSplitScreen( const refdef_t *fd, int *player
 	return qtrue;
 }
 
+// The cgame supplies FOVs for square framebuffer pixels. Xbox 480p wide
+// is anamorphic: widen X once at scene admission, keeping authored vertical
+// framing. This also covers ICARUS cameras and menu model previews.
+#ifdef _XBOX
+extern float GLW_GetPixelAspect(void);
+#endif
+static float R_STEFX_PixelAspect(void)
+{
+#ifdef _XBOX
+    return GLW_GetPixelAspect();
+#else
+    return 1.0f;
+#endif
+}
+static float R_STEFX_WidenFov(float fovX, float pixelAspect)
+{
+    if (pixelAspect == 1.0f) return fovX;
+    return atan(tan(fovX * M_PI / 360.0f) * pixelAspect) * 360.0f / M_PI;
+}
+
 static float R_STEFX_CalcFovXForViewport( float fovY, int width, int height )
 {
 	float y;
@@ -873,7 +896,7 @@ static float R_STEFX_CalcFovXForViewport( float fovY, int width, int height )
 	}
 
 	y = (float)height / tan( fovY / 360.0f * M_PI );
-	return atan2( (float)width, y ) * 360.0f / M_PI;
+	return atan2( (float)width * R_STEFX_PixelAspect(), y ) * 360.0f / M_PI;
 }
 
 static void R_STEFX_SetSplitViewport( trRefdef_t *refdef, viewParms_t *parms, const trRefdef_t *sourceRefdef, const viewParms_t *sourceParms, int slot, int players )
@@ -1137,8 +1160,28 @@ void RE_RenderScene( const refdef_t *fd ) {
 	tr.refdef.y = fd->y;
 	tr.refdef.width = fd->width;
 	tr.refdef.height = fd->height;
-	tr.refdef.fov_x = fd->fov_x;
+	tr.refdef.fov_x = R_STEFX_WidenFov(fd->fov_x, R_STEFX_PixelAspect());
 	tr.refdef.fov_y = fd->fov_y;
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    // Proof is sampled read-only by the harness.
+    int aspectSlot = (fd->rdflags & RDF_NOWORLDMODEL) ? 6 : 0;
+    float pixelAspect = R_STEFX_PixelAspect();
+    g_SPXBViewAspectProof[aspectSlot] = fd->width;
+    g_SPXBViewAspectProof[aspectSlot + 1] = fd->height;
+    g_SPXBViewAspectProof[aspectSlot + 2] = *(unsigned int *)&pixelAspect;
+    g_SPXBViewAspectProof[aspectSlot + 3] = *(unsigned int *)&fd->fov_x;
+    g_SPXBViewAspectProof[aspectSlot + 4] = *(unsigned int *)&tr.refdef.fov_x;
+    g_SPXBViewAspectProof[aspectSlot + 5] = *(unsigned int *)&tr.refdef.fov_y;
+    static int aspectLogBudget = 12;
+    if (aspectLogBudget > 0) {
+        --aspectLogBudget;
+        XBLF("STEFX_VIEW_ASPECT: viewport=%dx%d pixelAspect=%g input=%g/%g output=%g/%g flags=%d",
+            fd->width, fd->height, R_STEFX_PixelAspect(), fd->fov_x, fd->fov_y,
+            tr.refdef.fov_x, tr.refdef.fov_y, fd->rdflags);
+    }
+#endif
+
+
 
 	VectorCopy( fd->vieworg, tr.refdef.vieworg );
 	VectorCopy( fd->viewaxis[0], tr.refdef.viewaxis[0] );

@@ -840,6 +840,9 @@ void AS_ParseSets( void )
 		ambientSet_t *aSet = aSets->GetSet( str );
 		if (!aSet)
 		{
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+			XBLog_WriteCriticalf("STEFX_AMBIENT: undefined set name='%s'; retaining silent fallback", str);
+#endif
 			// I print these red instead of yellow because they're going to cause an ERR_DROP if they occur
 			Com_Printf( S_COLOR_RED"ERROR: AS_ParseSets: Unable to find ambient soundset \"%s\"!\n",str);
 			iErrorsOccured++;
@@ -851,7 +854,16 @@ void AS_ParseSets( void )
 #ifdef _XBOX
 		XBLog_WriteCriticalf("STEFX_AMBIENT: parse missing=%d precache=%d", iErrorsOccured, (int)pMap->size());
 #endif
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+		// Retail EF maps contain undefined references (scav4 uses
+		// "klingonhall", absent from its original sound/sound.txt). The
+		// update/lookup paths already handle an absent set safely. Do not
+		// reject the entire campaign map with JA's stricter validation or
+		// invent a replacement for the authored reference.
+		XBLog_WriteCriticalf("STEFX_AMBIENT: continuing with %d undefined sets", iErrorsOccured);
+#else
 		Com_Error( ERR_DROP, "....%d missing sound sets! (see above)\n", iErrorsOccured);
+#endif
 	}
 
 #ifdef _XBOX

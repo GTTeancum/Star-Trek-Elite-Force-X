@@ -1,0 +1,147 @@
+{
+  "vv_astro_wide": {
+    "summary.json": {
+      "loaded_map": "tour/deck08",
+      "finished_in_game": true,
+      "final_liveness_verified": true,
+      "engine_error_message": "",
+      "physical_memory_total_available_bytes": [
+        67108864,
+        1462272
+      ]
+    },
+    "iso_transaction.json": {
+      "restored": true,
+      "map": "tour/deck08",
+      "seconds": 175
+    },
+    "astrometrics_proof": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "astro_harness_proof": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "view_aspect_proof": [
+      640,
+      480,
+      1068149419,
+      1117782016,
+      1119934001,
+      1115732895,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "vv_astro_menu_wide": {
+    "summary.json": {
+      "loaded_map": "tour/deck08",
+      "finished_in_game": true,
+      "final_liveness_verified": true,
+      "engine_error_message": "",
+      "physical_memory_total_available_bytes": [
+        67108864,
+        389120
+      ]
+    },
+    "iso_transaction.json": {
+      "restored": true,
+      "map": "tour/deck08",
+      "seconds": 175
+    },
+    "astrometrics_proof": [
+      1,
+      134217727,
+      0,
+      0,
+      0,
+      0,
+      0,
+      2
+    ],
+    "astro_harness_proof": [
+      134217727,
+      31,
+      0,
+      0
+    ],
+    "view_aspect_proof": [
+      640,
+      480,
+      1068149419,
+      1117782016,
+      1119934001,
+      1115732895,
+      300,
+      140,
+      1068149419,
+      1114564694,
+      1117110024,
+      1106247680
+    ]
+  },
+  "vv_astro_authored_sweep": {
+    "summary.json": {
+      "loaded_map": "tour/deck08",
+      "finished_in_game": true,
+      "final_liveness_verified": true,
+      "engine_error_message": "",
+      "physical_memory_total_available_bytes": [
+        67108864,
+        1462272
+      ]
+    },
+    "iso_transaction.json": {
+      "restored": true,
+      "map": "tour/deck08",
+      "seconds": 135
+    },
+    "astrometrics_proof": [
+      1,
+      16777215,
+      0,
+      0,
+      0,
+      0,
+      0,
+      23
+    ],
+    "astro_harness_proof": [
+      16777215,
+      25,
+      0,
+      0
+    ],
+    "view_aspect_proof": [
+      640,
+      480,
+      1068149419,
+      1117782016,
+      1119934001,
+      1115732895,
+      300,
+      140,
+      1068149419,
+      1114564694,
+      1117110024,
+      1106247680
+    ]
+  },
+  "loader_decompilation": {
+    "language": "MIPS:LE:64:64-32addr",
+    "functions": 9
+  }
+}

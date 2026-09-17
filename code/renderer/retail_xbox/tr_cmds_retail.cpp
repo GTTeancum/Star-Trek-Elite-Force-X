@@ -410,6 +410,11 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 
 	tr.frameCount++;
 	tr.frameSceneNum = 0;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	// CPU-only cache; Xbox render commands execute synchronously.
+	extern void R_STEFX_CoopSkinBeginFrame(void);
+	R_STEFX_CoopSkinBeginFrame();
+#endif
 
 	//
 	// do overdraw measurement

@@ -654,7 +654,17 @@ static const char *SP_GetEFLoadingTitle(void)
 		*extension = '\0';
 	}
 	Q_strupr(cleanMap);
-	Com_sprintf(infoItem, sizeof(infoItem), "II_%s", cleanMap);
+	// Expansion deck labels use II_DECK_02 while BSPs use tour/deck02.
+	if (!Q_stricmpn(cleanMap, "DECK", 4) && strlen(cleanMap) == 6 &&
+		cleanMap[4] >= '0' && cleanMap[4] <= '9' &&
+		cleanMap[5] >= '0' && cleanMap[5] <= '9')
+	{
+		Com_sprintf(infoItem, sizeof(infoItem), "II_DECK_%s", cleanMap + 4);
+	}
+	else
+	{
+		Com_sprintf(infoItem, sizeof(infoItem), "II_%s", cleanMap);
+	}
 
 	title[0] = '\0';
 	if (!language[0] || !Q_stricmp(language, "ENGLISH"))

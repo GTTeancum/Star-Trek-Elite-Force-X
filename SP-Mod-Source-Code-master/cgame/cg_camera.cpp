@@ -1231,13 +1231,31 @@ CGCam_DrawWideScreen
 void CGCam_DrawWideScreen( void )
 {
 	vec4_t	modulate;
+	// Advance the transition before testing visibility or reading its height.
+	// Camera shutdown continues fading here after CGCam_Update stops running.
+	if (client_camera.info_state & CAMERA_BAR_FADING)
+		CGCam_UpdateBarFade();
 	int		barHeight = client_camera.bar_height;
+
+#ifdef _XBOX
+	{
+		static int s_lastCamera = -1;
+		static int s_lastBarsVisible = -1;
+		const int barsVisible = client_camera.bar_alpha > 0.0f && barHeight > 0;
+		if (s_lastCamera != (int)in_camera || s_lastBarsVisible != barsVisible) {
+			XBLog_WriteCriticalf("STEFX_CAMERA_BARS: time=%d camera=%d visible=%d alpha=%g height=%d target=%g rect=%d,%d,%d,%d",
+				cg.time, (int)in_camera, barsVisible, client_camera.bar_alpha,
+				barHeight, client_camera.bar_alpha_dest, cg.refdef.x, cg.refdef.y,
+				cg.refdef.width, cg.refdef.height);
+			s_lastCamera = (int)in_camera;
+			s_lastBarsVisible = barsVisible;
+		}
+	}
+#endif
 
 	//Only draw if visible
 	if ( client_camera.bar_alpha )
 	{
-		CGCam_UpdateBarFade();
-
 		modulate[0] = modulate[1] = modulate[2] = 0.0f;
 		modulate[3] = client_camera.bar_alpha;
 	

@@ -1,6 +1,30 @@
 #include "cg_local.h"
 #include "FX_Public.h"
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#include "../../code/win32/xb_perf.h"
+#define STEFX_COOP_FX_DETAIL 1
+// Completed-frame publication: sequence, schema, client frame, time, live FX,
+// row count; 32 rows of vtable, four operation counts and four cycle totals.
+// Row 31 catches overflow. Vtables are resolved against this executable's map.
+extern "C" volatile unsigned int g_SPXBCoopFxPhases[294] = {0};
+static unsigned int s_coopFxRows[32][9];
+static int s_coopFxRowCount;
+static int STEFX_FxProfileRow(FXPrimitive *effect) {
+	unsigned int vtable = *(const unsigned int *)effect;
+	for (int i = 0; i < s_coopFxRowCount; ++i)
+		if (s_coopFxRows[i][0] == vtable) return i;
+	if (s_coopFxRowCount >= 31) { s_coopFxRows[31][0] = ~0u; return 31; }
+	s_coopFxRows[s_coopFxRowCount][0] = vtable;
+	return s_coopFxRowCount++;
+}
+static void STEFX_FxProfileOp(int row, int op, unsigned __int64 start) {
+	if (row < 0) return;
+	s_coopFxRows[row][5+op] += STEFX_XboxElapsedCycles(start);
+	++s_coopFxRows[row][1+op];
+}
+#endif
+
 vec3_t	WHITE = {1.0, 1.0, 1.0};
 int		numFX	= 0;
 
@@ -91,6 +115,10 @@ Adds all client effects (within the FX wrapper) to the view
 void FX_Add( void )
 {
 	FX_state_t	*state;
+#if STEFX_COOP_FX_DETAIL
+	const bool profile = cg_stefxSplitScreen.integer && cg_stefxSplitScreenPlayers.integer >= 2;
+	if (profile) { memset(s_coopFxRows, 0, sizeof(s_coopFxRows)); s_coopFxRowCount = 0; }
+#endif
 
 #ifdef _DEBUG
 
@@ -107,6 +135,10 @@ void FX_Add( void )
 			continue;
 
 		state = &FX_renderList[ i ];
+#if STEFX_COOP_FX_DETAIL
+		const int profileRow = profile ? STEFX_FxProfileRow(state->effect) : -1;
+		unsigned __int64 profileStart = 0;
+#endif
 		
 		if ( cg_freezeFX.integer )
 			state->killTime += cg.frametime;	//Keep the effects alive
@@ -115,7 +147,13 @@ void FX_Add( void )
 		if ( ( ( state->killTime < cg.time ) && ( state->killTime != -1 ) ) )
 		{
 			//Free out the effect primitive
+#if STEFX_COOP_FX_DETAIL
+			if (profile) profileStart = STEFX_XboxReadTsc();
+#endif
 			FX_FreeMember( state );
+#if STEFX_COOP_FX_DETAIL
+			STEFX_FxProfileOp(profileRow, 0, profileStart);
+#endif
 			continue;
 		}
 
@@ -123,18 +161,44 @@ void FX_Add( void )
 		if ( !cg_freezeFX.integer && ( cg.frametime > 0 ) )	//not paused
 		{
 			//If the function returns false, this effect has been removed
-			if ( state->effect->Update() == qfalse )
+#if STEFX_COOP_FX_DETAIL
+			if (profile) profileStart = STEFX_XboxReadTsc();
+#endif
+			const bool alive = state->effect->Update();
+#if STEFX_COOP_FX_DETAIL
+			STEFX_FxProfileOp(profileRow, 1, profileStart);
+#endif
+			if ( alive == qfalse )
 			{
+#if STEFX_COOP_FX_DETAIL
+				if (profile) profileStart = STEFX_XboxReadTsc();
+#endif
 				FX_FreeMember( state );
+#if STEFX_COOP_FX_DETAIL
+				STEFX_FxProfileOp(profileRow, 0, profileStart);
+#endif
 				continue;
 			}
 		}
 	
 		//Cull the effect
-		if ( state->effect->Cull() == qfalse )
+#if STEFX_COOP_FX_DETAIL
+		if (profile) profileStart = STEFX_XboxReadTsc();
+#endif
+		const bool culled = state->effect->Cull();
+#if STEFX_COOP_FX_DETAIL
+		STEFX_FxProfileOp(profileRow, 2, profileStart);
+#endif
+		if ( culled == qfalse )
 		{
 			//Draw the effect
+#if STEFX_COOP_FX_DETAIL
+			if (profile) profileStart = STEFX_XboxReadTsc();
+#endif
 			state->effect->Draw();
+#if STEFX_COOP_FX_DETAIL
+			STEFX_FxProfileOp(profileRow, 3, profileStart);
+#endif
 		}
 	}
 
@@ -163,6 +227,20 @@ void FX_Add( void )
 	//Print any debugging information, if requested
 	if ( cg_debugFX.value )
 		FX_PrintDebugInfo();
+#if STEFX_COOP_FX_DETAIL
+	if (profile) {
+		++g_SPXBCoopFxPhases[0];
+		g_SPXBCoopFxPhases[1] = 1;
+		g_SPXBCoopFxPhases[2] = cg.clientFrame;
+		g_SPXBCoopFxPhases[3] = cg.time;
+		g_SPXBCoopFxPhases[4] = numFX;
+		g_SPXBCoopFxPhases[5] = s_coopFxRows[31][0] ? 32 : s_coopFxRowCount;
+		for (int row = 0; row < 32; ++row)
+			for (int col = 0; col < 9; ++col)
+				g_SPXBCoopFxPhases[6+row*9+col] = s_coopFxRows[row][col];
+		++g_SPXBCoopFxPhases[0];
+	}
+#endif
 }
 
 /*

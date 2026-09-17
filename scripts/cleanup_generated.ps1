@@ -199,7 +199,7 @@ if (Test-Path -LiteralPath $buildRoot -PathType Container) {
 }
 
 $trackedOutput = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-$trackedOutputLines = @(& git -C $repoRoot ls-files --full-name scripts/output)
+$trackedOutputLines = @(& git -c "safe.directory=$repoRoot" -C $repoRoot ls-files --full-name scripts/output)
 if ($LASTEXITCODE -ne 0) {
     throw "Could not enumerate tracked scripts/output files; cleanup aborted."
 }

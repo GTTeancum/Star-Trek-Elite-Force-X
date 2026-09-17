@@ -7,6 +7,7 @@
 
 #ifdef _XBOX
 #include "../../code/win32/xb_log.h"
+extern "C" void STEFX_VvTravelTrace(unsigned int, unsigned int, unsigned int, unsigned int);
 
 static bool STEFX_LogSequencerOwner( int ownerID )
 {
@@ -2006,6 +2007,9 @@ Affect
 
 int CSequencer::Affect( int id, int type )
 {
+#ifdef _XBOX
+    STEFX_VvTravelTrace(5, m_ownerID, id, type);
+#endif
 	CSequence	*sequence = GetSequence( id );
 
 	if ( sequence == NULL )

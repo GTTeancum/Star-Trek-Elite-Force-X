@@ -1,5 +1,63 @@
 # Elite Force X Beta Qualification Snapshot
 
+## Additional low-window pass closed by user — September 11
+
+The user closed the additional goal of keeping every ten-second Holomatch
+window above30native XEMU FPS. That target was not achieved; the pass is closed
+by user direction and no further optimization is deferred. Co-op was also
+accepted as-is. Retail, controller and release checks remain open in
+[the current to-do](GAME_TODO.md). The completed baseline below is historical
+qualification evidence, not proof of the abandoned low-window target.
+
+## Latest check — final optimization push completed September 11
+
+Resident world triangles improved matched hm_borg1 gameplay from 18.88 to 33.81
+native XEMU FPS (+14.93), with four moving local players and four active bots.
+A twenty-minute candidate soak averaged 33.12 native FPS across confirmed
+gameplay and ended live without an engine error or observed sustained freeze.
+Both surrounding control runs support the gain. The conservative FX culling
+and batching paths remain enabled, with no further LOD or texture reductions.
+
+Final production `efmp.xbe` SHA256:
+`1f155977c67d71bca5587e95db073617ac5b289e25fca6d317f7eee0afedfb81`.
+Fresh SP and MP builds passed. A 180-second full-workload check on the original
+XEMU, without renderer overrides, confirmed the actual defaults and live/error-
+clear endpoint; confirmed gameplay averaged 34.87 native FPS. The optimization
+item is closed. Existing retail, controller, packaging and release checks remain.
+
+Live sampling isolated an XEMU full-cache scan as a substantial slowdown source.
+A separate emulator-only guard gained 13.03 FPS with game resident storage off;
+that diagnostic result is not an Xbox-code gain and no emulator was replaced.
+Native FPS uses XEMU's frame counter over host time, not guest FPS or reciprocal
+MSPF. Retail performance and the cause of every historical freeze remain unproven.
+The working test ISO was restored; the beta ISO has not been rebuilt with this XBE.
+See [diagnosis, comparisons and retained evidence](notes/mp_resident_triangles_2026-09-11.md).
+
+## Historical guest-clock checks and beta priority — September 10, 2026
+
+The MP optimization item is closed for the tested XEMU workload: hm_borg1 and
+hm_voy1 each completed 600 host seconds with four moving players and four verified
+bots, averaging 30.57 and 28.62 guest FPS. Both ended live without an engine error.
+Retail/host presentation and physical-controller release checks remain open;
+there is no deferred 30 FPS optimization pass.
+
+Latest full-workload candidate soak: four moving local players and four verified
+bots, no crash observed over 600 host seconds. Retained gameplay averaged 30.57
+guest FPS and the final minute averaged 24.41 (baseline 25.56/19.44). The 20+
+average is met on hm_borg1 in this run; representative-map consistency and
+retail/host presentation remain unverified. Keep the cached shader-trace lookup.
+See [MP optimization investigation](notes/mp_optimization_2026-09-10.md).
+
+Stable four-player Holomatch consistently averaging above 20 FPS is the user's
+current beta performance threshold. Prioritize stability and tester readiness;
+do not delay beta preparation for 30 FPS. Close the performance list item once
+verified; do not retain deferred optimization work. A later pass gets a new item
+when the user requests it. Check longer matches and representative maps, report slow
+windows and stuttering, and distinguish XEMU guest elapsed FPS from visible
+host speed. Retail Xbox remains the final performance authority. Historical
+30 FPS gates below do not override this updated beta priority. This is a target
+change, not evidence that the current build has met it or authorization to publish.
+
 Date: 2026-08-01
 
 ## Current Qualification Gate - 2026-08-20

@@ -539,7 +539,11 @@ Upload32
 */
 #ifdef _XBOX
 static void JkaFakeglSetDDSUploadPicmip(int) {}
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+extern void JkaFakeglSetTextureDebugName(const char *);
+#else
 static void JkaFakeglSetTextureDebugName(const char *) {}
+#endif
 static void FakeGL_ResetRegisteredTextureBudget(void) {}
 #endif
 
@@ -649,7 +653,13 @@ static void Upload32( const char *debugName, unsigned *data,
 			int oldHeight = height;
 			static qboolean s_loggedStefxUploadCaps = qfalse;
 
-			if ( highFidelityUIFont )
+			// *screen is writable storage for distortion captures. Its header is
+			// resized by CopyBackBufferToTexEXT, so preserve its capture capacity.
+			if ( debugName && !Q_stricmp( debugName, "*screen" ) )
+			{
+				maxUploadSize = img_width > img_height ? img_width : img_height;
+			}
+			else if ( highFidelityUIFont )
 			{
 				maxUploadSize = 256;
 			}

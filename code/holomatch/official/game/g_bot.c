@@ -7,6 +7,16 @@
 
 static int		g_numBots;
 static char		*g_botInfos[MAX_BOTS];
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_MP)
+volatile unsigned int g_SPXBBotDefinitionProof[8];
+char g_SPXBBotDefinitionText[2048];
+static void G_RecordBotDefinition(const char *text) {
+	int used = strlen(g_SPXBBotDefinitionText);
+	if (used < sizeof(g_SPXBBotDefinitionText) - 1) {
+		Q_strncpyz(g_SPXBBotDefinitionText + used, text, sizeof(g_SPXBBotDefinitionText) - used);
+	}
+}
+#endif
 
 
 int				g_numArenas;
@@ -907,6 +917,13 @@ static void G_LoadBotsFromFile( char *filename ) {
 	char			buf[MAX_BOTS_TEXT];
 
 	len = trap_FS_FOpenFile( filename, &f, FS_READ );
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_MP)
+	++g_SPXBBotDefinitionProof[2];
+	g_SPXBBotDefinitionProof[3] = (unsigned int)len;
+	g_SPXBBotDefinitionProof[4] = (unsigned int)f;
+	G_Printf("STEFX_HM_BOT_DEFINITIONS: open file=%s length=%d handle=%d\n", filename, len, f);
+	G_RecordBotDefinition(va("file=%s length=%d handle=%d\n", filename, len, f));
+#endif
 	if ( !f ) {
 		trap_Printf( va( S_COLOR_RED "file not found: %s\n", filename ) );
 		return;
@@ -922,6 +939,17 @@ static void G_LoadBotsFromFile( char *filename ) {
 	trap_FS_FCloseFile( f );
 
 	g_numBots += G_ParseInfos( buf, MAX_BOTS - g_numBots, &g_botInfos[g_numBots] );
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_MP)
+	g_SPXBBotDefinitionProof[5] = (unsigned int)g_numBots;
+	{
+		int proofIndex;
+		G_RecordBotDefinition(va("parsed=%d prefix=%.120s\n", g_numBots, buf));
+		for (proofIndex = 0; proofIndex < g_numBots && proofIndex < 16; ++proofIndex) {
+			G_RecordBotDefinition(va("name=%.32s\n", Info_ValueForKey(g_botInfos[proofIndex], "name")));
+		}
+	}
+	G_Printf("STEFX_HM_BOT_DEFINITIONS: parsed file=%s total=%d\n", filename, g_numBots);
+#endif
 }
 
 /*
@@ -938,6 +966,11 @@ static void G_LoadBots( void ) {
 	int			i;
 	int			dirlen;
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_MP)
+	++g_SPXBBotDefinitionProof[0];
+	g_SPXBBotDefinitionProof[1] = (unsigned int)trap_Cvar_VariableIntegerValue("bot_enable");
+	G_Printf("STEFX_HM_BOT_DEFINITIONS: initialize enabled=%u\n", g_SPXBBotDefinitionProof[1]);
+#endif
 	if ( !trap_Cvar_VariableIntegerValue( "bot_enable" ) ) {
 		return;
 	}
@@ -988,6 +1021,10 @@ G_GetBotInfoByName
 char *G_GetBotInfoByName( const char *name ) {
 	int		n;
 	char	*value;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_MP)
+	g_SPXBBotDefinitionProof[6] = (unsigned int)g_numBots;
+	G_Printf("STEFX_HM_BOT_DEFINITIONS: lookup name=%s count=%d\n", name, g_numBots);
+#endif
 
 	for ( n = 0; n < g_numBots ; n++ ) {
 		value = Info_ValueForKey( g_botInfos[n], "name" );

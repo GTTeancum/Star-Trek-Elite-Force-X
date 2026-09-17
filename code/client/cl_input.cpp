@@ -610,6 +610,28 @@ static qboolean STEFX_SplitScreen_BuildTestP2Usercmd( usercmd_t *cmd, const vec3
 		return qfalse;
 	}
 
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	// Diagnostic controls must yield to the campaign's authored presentation.
+	// Real controller behavior and ICARUS state are untouched by this fixture.
+	extern bool in_camera;
+	extern qboolean player_locked;
+	if ( in_camera || player_locked )
+	{
+		memset( cmd, 0, sizeof( *cmd ) );
+		cmd->serverTime = serverTime;
+		for ( int axis = 0; axis < 3; ++axis )
+		{
+			cmd->angles[axis] = ANGLE2SHORT( currentAngles[axis] ) - ( deltaAngles ? deltaAngles[axis] : 0 );
+		}
+		if ( outAngles ) VectorCopy( currentAngles, outAngles );
+		if ( sourcePort ) *sourcePort = -2;
+		if ( weaponDelta ) *weaponDelta = 0;
+		s_testAnglesValid = qfalse;
+		s_testLastServerTime = serverTime;
+		return qtrue;
+	}
+#endif
+
 	if ( !s_testAnglesValid )
 	{
 		VectorCopy( currentAngles, s_testAngles );
@@ -648,6 +670,13 @@ static qboolean STEFX_SplitScreen_BuildTestP2Usercmd( usercmd_t *cmd, const vec3
 	cmd->angles[PITCH] = ANGLE2SHORT( s_testAngles[PITCH] ) - ( deltaAngles ? deltaAngles[PITCH] : 0 );
 	cmd->angles[YAW] = ANGLE2SHORT( s_testAngles[YAW] ) - ( deltaAngles ? deltaAngles[YAW] : 0 );
 	cmd->angles[ROLL] = 0;
+
+	// Opt-in combat fixture: mode 3 extends movement/weapon cycling with
+	// primary-fire bursts. Campaign locks above still force neutral input.
+	if ( testMode == 3 && phase != 3 )
+	{
+		cmd->buttons |= BUTTON_ATTACK;
+	}
 
 	if ( outAngles )
 	{
@@ -2497,6 +2526,9 @@ CL_CreateCmd
 */
 vec3_t cl_overriddenAngles = {0,0,0};
 qboolean cl_overrideAngles = qfalse;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#include "stefx_input_replay.h"
+#endif
 usercmd_t CL_CreateCmd( void ) {
 	usercmd_t	cmd;
 	vec3_t		oldAngles;
@@ -2540,6 +2572,9 @@ usercmd_t CL_CreateCmd( void ) {
 
 	// get basic movement from joystick
 	CL_JoystickMove( &cmd );
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	STEFX_ApplyInputReplay(&cmd, oldAngles);
+#endif
 
 	// check to make sure the angles haven't wrapped
 	if ( cl.viewangles[PITCH] - oldAngles[PITCH] > 90 ) {

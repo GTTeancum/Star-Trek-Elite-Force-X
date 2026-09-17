@@ -136,8 +136,20 @@ static qboolean STEFX_ApplySafeArea(GLint& x, GLint& y, GLsizei& width, GLsizei&
 ** one session; samples carry the window serial so boundary samples can be
 ** discarded offline.
 */
-#define STEFX_SCRATCH_BUFFER_COUNT 2
-#define STEFX_SCRATCH_BUFFER_DWORDS (256 * 1024) /* 1 MiB per buffer */
+#define STEFX_SCRATCH_BUFFER_COUNT 3 /* bounded MP layout experiments */
+#define STEFX_SCRATCH_BUFFER_DWORDS (256 * 1024) /* baseline: 1 MiB per buffer */
+static int s_stefxScratchBufferCount = 2;
+static unsigned int s_stefxScratchCapacityDwords = STEFX_SCRATCH_BUFFER_DWORDS;
+extern "C" volatile unsigned int g_SPXBScratchLayoutProof[4] = { 2, STEFX_SCRATCH_BUFFER_DWORDS, 0, 0 };
+
+// Startup-only experiments; at most 4.5 MiB total, 2.5 MiB above the control.
+// Wider buffers test capacity; the third slot tests GPU reuse latency.
+static void STEFX_ScratchSelectLayout(int buffers, int kilobytes)
+{
+	s_stefxScratchBufferCount = buffers == 3 ? 3 : 2;
+	s_stefxScratchCapacityDwords = (kilobytes == 1536)
+		? 384u * 1024u : STEFX_SCRATCH_BUFFER_DWORDS;
+}
 
 extern "C" volatile unsigned int g_SPXBScratchMode = 0;
 extern "C" volatile unsigned int g_SPXBScratchFlip = 0;
@@ -157,40 +169,63 @@ static int s_stefxScratchInitDone;
 static int s_stefxScratchFrameActive;
 static cvar_t *s_stefxScratchCvar;
 static cvar_t *s_stefxScratchABCvar;
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+static void STEFX_CoopWorldConfigure(void);
+static void STEFX_CoopModelReset(void);
+static void STEFX_CoopModelConfigure(void);
+static bool s_coopWorldBorrowed;
+extern "C" volatile unsigned int g_SPXBCoopWorldStorage[8] = {0};
+#endif
 
-static void STEFX_ScratchInit(void)
+static qboolean STEFX_ScratchAllocateLayout(void)
 {
 	int i;
-
-	s_stefxScratchInitDone = 1;
-	s_stefxScratchCvar = Cvar_Get("r_efScratchVerts", "1", 0);
-	s_stefxScratchABCvar = Cvar_Get("r_efScratchAB", "0", 0);
-	for (i = 0; i < STEFX_SCRATCH_BUFFER_COUNT; ++i)
+	for (i = 0; i < s_stefxScratchBufferCount; ++i)
 	{
 		s_stefxScratchBase[i] = (DWORD *)XPhysicalAlloc(
-			STEFX_SCRATCH_BUFFER_DWORDS * sizeof(DWORD), MAXULONG_PTR, 16,
+			s_stefxScratchCapacityDwords * sizeof(DWORD), MAXULONG_PTR, 16,
 			PAGE_READWRITE | PAGE_WRITECOMBINE);
 		s_stefxScratchFence[i] = 0;
-	}
-	if (s_stefxScratchBase[0] && s_stefxScratchBase[1])
-	{
-		s_stefxScratchReady = 1;
-	}
-	else
-	{
-		for (i = 0; i < STEFX_SCRATCH_BUFFER_COUNT; ++i)
+		if (!s_stefxScratchBase[i])
 		{
-			if (s_stefxScratchBase[i])
+			while (i > 0)
 			{
+				--i;
 				XPhysicalFree(s_stefxScratchBase[i]);
 				s_stefxScratchBase[i] = NULL;
 			}
+			return qfalse;
 		}
 	}
+	return qtrue;
+}
+
+static void STEFX_ScratchInit(void)
+{
+	s_stefxScratchInitDone = 1;
+	s_stefxScratchCvar = Cvar_Get("r_efScratchVerts", "1", 0);
+	s_stefxScratchABCvar = Cvar_Get("r_efScratchAB", "0", 0);
+#if defined(STEFX_SP_HOSTED_MP)
+	// Keep the production control as the default until measured qualification.
+	STEFX_ScratchSelectLayout(Cvar_Get("r_efScratchBuffers", "2", 0)->integer,
+		Cvar_Get("r_efScratchKB", "1024", 0)->integer);
+#endif
+	s_stefxScratchReady = STEFX_ScratchAllocateLayout();
+	if (!s_stefxScratchReady && (s_stefxScratchBufferCount != 2 ||
+		s_stefxScratchCapacityDwords != STEFX_SCRATCH_BUFFER_DWORDS))
+	{
+		g_SPXBScratchLayoutProof[2] = 1;
+		XBLog_WriteCritical("STEFX_D3D8: larger vertex scratch allocation failed; retrying original 2x1024KB");
+		STEFX_ScratchSelectLayout(2, 1024);
+		s_stefxScratchReady = STEFX_ScratchAllocateLayout();
+	}
+	g_SPXBScratchLayoutProof[0] = (unsigned int)s_stefxScratchBufferCount;
+	g_SPXBScratchLayoutProof[1] = s_stefxScratchCapacityDwords;
+	g_SPXBScratchLayoutProof[3] = (unsigned int)s_stefxScratchReady;
 	XBLog_WriteCriticalf(
 		"STEFX_D3D8: vertexScratchRing ready=%d buffers=%dx%uKB enable=%d ab=%d",
-		s_stefxScratchReady, STEFX_SCRATCH_BUFFER_COUNT,
-		(unsigned int)(STEFX_SCRATCH_BUFFER_DWORDS * sizeof(DWORD) / 1024u),
+		s_stefxScratchReady, s_stefxScratchBufferCount,
+		(unsigned int)(s_stefxScratchCapacityDwords * sizeof(DWORD) / 1024u),
 		s_stefxScratchCvar->integer, s_stefxScratchABCvar->integer);
 }
 
@@ -202,6 +237,11 @@ static void STEFX_ScratchFrameBegin(void)
 	{
 		STEFX_ScratchInit();
 	}
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	// Ownership changes happen before any draw reservations for this frame.
+	STEFX_CoopWorldConfigure();
+	STEFX_CoopModelConfigure();
+#endif
 	if (s_stefxScratchReady && glw_state->device)
 	{
 		const int abSeconds = s_stefxScratchABCvar->integer;
@@ -223,7 +263,8 @@ static void STEFX_ScratchFrameBegin(void)
 	}
 	if (enabled)
 	{
-		s_stefxScratchIndex ^= 1;
+		if (++s_stefxScratchIndex >= s_stefxScratchBufferCount)
+			s_stefxScratchIndex = 0;
 		if (s_stefxScratchFence[s_stefxScratchIndex] &&
 			glw_state->device->IsFencePending(
 				s_stefxScratchFence[s_stefxScratchIndex]))
@@ -241,8 +282,14 @@ static void STEFX_ScratchFrameBegin(void)
 	g_SPXBScratchMode = (unsigned int)enabled;
 }
 
+#if defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP)
+static void STEFX_WorldVerticesReport(void);
+#endif
 static void STEFX_ScratchFrameEnd(void)
 {
+#if defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP)
+	STEFX_WorldVerticesReport();
+#endif
 	if (s_stefxScratchFrameActive && s_stefxScratchReady && glw_state->device)
 	{
 		s_stefxScratchFence[s_stefxScratchIndex] =
@@ -259,7 +306,8 @@ static __forceinline DWORD *STEFX_ScratchClaim(unsigned int dwords)
 	const unsigned int aligned = (dwords + 3u) & ~3u;
 	DWORD *claimed;
 
-	if (s_stefxScratchOffset + aligned > STEFX_SCRATCH_BUFFER_DWORDS)
+	if (dwords > s_stefxScratchCapacityDwords ||
+		aligned > s_stefxScratchCapacityDwords - s_stefxScratchOffset)
 	{
 		// Ring full this frame: the caller falls back to the inline path.
 		++g_SPXBScratchFallbacks;
@@ -272,6 +320,516 @@ static __forceinline DWORD *STEFX_ScratchClaim(unsigned int dwords)
 	return claimed;
 }
 #endif // _XBOX
+
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP) || defined(STEFX_HW_FRAME_DIAGNOSTICS))
+// Base-material marker is also used by SP/co-op diagnostic draw classification.
+bool g_stefxWorldBasePass = false;
+#endif
+
+// STEFX_WORLD_VERTICES_BEGIN
+// Private immutable storage for the native indexed draw path.
+// Immutable, per-surface/per-stage vertices; visible indices remain dynamic.
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+#define STEFX_WORLD_VERTEX_CAPACITY 21840u
+#if defined(STEFX_SP_HOSTED_MP)
+#define STEFX_WORLD_ARRAY_CAPACITY 43680u
+#define STEFX_WORLD_VERTEX_KEYS 8192u
+#else
+// Co-op borrows exactly one existing 1 MiB scratch slab; no GPU allocation.
+#define STEFX_WORLD_ARRAY_CAPACITY 21840u
+#define STEFX_WORLD_VERTEX_KEYS 4096u
+// Leave headroom for small BSP faces and bound misses when the cache fills.
+#define STEFX_COOP_WORLD_MAX_PROBES 32u
+#endif
+struct stefxWorldVertex_t {
+    float xyz[3], normal[3];
+    DWORD color;
+    float uv0[2], uv1[2];
+    DWORD pad;
+};
+typedef char stefxWorldVertexSize[(sizeof(stefxWorldVertex_t) == 48) ? 1 : -1];
+struct stefxWorldVertexKey_t {
+    const void *surface;
+    const shaderStage_t *stage;
+    const shader_t *shader;
+    unsigned short first, count;
+    unsigned int format;
+};
+struct stefxWorldSpan_t { const void *surface; int first, count; };
+static stefxWorldVertex_t *s_worldVertices;
+static stefxWorldVertexKey_t s_worldVertexKeys[STEFX_WORLD_VERTEX_KEYS];
+static stefxWorldSpan_t s_worldSpans[SHADER_MAX_VERTEXES];
+static unsigned short s_worldRemap[SHADER_MAX_VERTEXES];
+static GLushort s_worldIndices[SHADER_MAX_INDEXES];
+static unsigned int s_worldVertexUsed;
+static int s_worldSpanCount, s_worldCovered;
+static cvar_t *s_worldVertexCvar, *s_worldVerifyCvar;
+static bool s_worldAllocAttempted;
+static int s_worldStorageMode;
+static bool s_worldArraysActive;
+struct stefxWorldArrayRun_t { int span, indexFirst, count; unsigned int vertexFirst; };
+static stefxWorldArrayRun_t s_worldArrayRuns[SHADER_MAX_VERTEXES];
+static unsigned short s_worldArrayCounts[STEFX_WORLD_VERTEX_KEYS];
+static unsigned short s_worldVertexOwners[SHADER_MAX_VERTEXES];
+static unsigned char s_worldArraySeen[SHADER_MAX_VERTEXES];
+static int s_worldArrayRunCount, s_worldArrayCommandCount;
+extern "C" volatile unsigned int g_SPXBWorldArrays[8] = {0};
+extern "C" volatile unsigned int g_SPXBWorldVertices[8] = {0};
+extern "C" volatile unsigned int g_SPXBWorldRejects[8] = {0};
+#if defined(STEFX_SP_HOSTED_MP)
+extern "C" volatile unsigned int g_SPXBFxCull[3];
+extern "C" volatile unsigned int g_SPXBFxMerged;
+#endif
+static void STEFX_WorldVerticesReport(void) {
+    static unsigned int frames;
+    if ((++frames & 511u) != 0u) return;
+#if defined(STEFX_SP_HOSTED_MP)
+    XBLog_WriteCriticalf("STEFX_RENDER_REUSE: eligible=%u draws=%u storedSurfaces=%u vertices=%u full=%u hits=%u mismatches=%u badIndexes=%u fxTest=%u fxCull=%u fxMerged=%u",
+        g_SPXBWorldVertices[0], g_SPXBWorldVertices[1], g_SPXBWorldVertices[2],
+        g_SPXBWorldVertices[3], g_SPXBWorldVertices[4], g_SPXBWorldVertices[5],
+        g_SPXBWorldVertices[6], g_SPXBWorldVertices[7], g_SPXBFxCull[0],
+        g_SPXBFxCull[1], g_SPXBFxMerged);
+#else
+    if (s_coopWorldBorrowed)
+        XBLog_WriteCriticalf("STEFX_COOP_WORLD: draws=%u vertices=%u hits=%u full=%u mismatches=%u scratchBuffers=%d",
+            g_SPXBWorldVertices[1], s_worldVertexUsed, g_SPXBWorldVertices[5],
+            g_SPXBWorldVertices[4], g_SPXBWorldVertices[6], s_stefxScratchBufferCount);
+#endif
+}
+
+void STEFX_WorldVerticesBeginBatch(void) {
+    s_worldSpanCount = s_worldCovered = 0;
+}
+void STEFX_WorldVerticesSurface(const void *surface, int count) {
+#if !defined(STEFX_SP_HOSTED_MP)
+    if (!s_coopWorldBorrowed || !s_worldVertexCvar || s_worldVertexCvar->integer != 2) return;
+#endif
+    // Gaps indicate an unsupported surface was mixed into this batch.
+    if (backEnd.currentEntity != &tr.worldEntity ||
+        s_worldCovered != tess.numVertexes || count <= 0 ||
+        count > SHADER_MAX_VERTEXES - s_worldCovered ||
+        s_worldSpanCount >= SHADER_MAX_VERTEXES) return;
+    stefxWorldSpan_t &span = s_worldSpans[s_worldSpanCount++];
+    span.surface = surface; span.first = tess.numVertexes; span.count = count;
+    s_worldCovered += count;
+}
+void STEFX_WorldVerticesReset(void) {
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+    STEFX_CoopModelReset();
+#endif
+    // Never overwrite/release vertices that an earlier frame still references.
+    if (s_worldVertices && glw_state && glw_state->device)
+        glw_state->device->BlockUntilIdle();
+#if defined(STEFX_SP_HOSTED_MP)
+    if (s_worldVertices) XPhysicalFree(s_worldVertices);
+#endif
+    s_worldVertices = NULL;
+    s_worldAllocAttempted = false;
+    s_worldVertexUsed = 0;
+    s_worldStorageMode = 0;
+    s_worldArraysActive = false;
+    memset(s_worldArrayCounts, 0, sizeof(s_worldArrayCounts));
+    memset((void *)g_SPXBWorldArrays, 0, sizeof(g_SPXBWorldArrays));
+    g_stefxWorldBasePass = false;
+    memset(s_worldVertexKeys, 0, sizeof(s_worldVertexKeys));
+    memset((void *)g_SPXBWorldVertices, 0, sizeof(g_SPXBWorldVertices));
+    STEFX_WorldVerticesBeginBatch();
+}
+
+static bool STEFX_WorldReject(unsigned int reason) {
+    if (++g_SPXBWorldRejects[reason] == 1u) {
+        const shaderStage_t *s = tess.xstages && tess.currentPass >= 0 &&
+            tess.shader && tess.currentPass < tess.shader->numUnfoggedPasses ? &tess.xstages[tess.currentPass] : NULL;
+        XBLog_WriteCriticalf("STEFX_WORLD_REJECT: reason=%u shader=%s world=%d split=%d spans=%d covered=%d verts=%d fog=%d dl=%d rgb=%d alpha=%d mods=%d,%d",
+            reason, tess.shader ? tess.shader->name : "null", backEnd.currentEntity == &tr.worldEntity,
+            backEnd.viewParms.stefxSplitView, s_worldSpanCount, s_worldCovered, tess.numVertexes,
+            tess.fogNum, tess.dlightBits, s ? s->rgbGen : -1, s ? s->alphaGen : -1,
+            s ? s->bundle[0].numTexMods : -1, s ? s->bundle[1].numTexMods : -1);
+    }
+    return false;
+}
+static bool STEFX_WorldStageStatic(int normals, int tex0, int tex1) {
+    if (!tess.shader || !tess.xstages || tess.currentPass < 0 ||
+        tess.currentPass >= tess.shader->numUnfoggedPasses) return STEFX_WorldReject(0);
+    if (tess.shader->numDeforms || tess.shader->sky || tess.fading) return STEFX_WorldReject(1);
+    if (!g_stefxWorldBasePass || backEnd.projection2D ||
+        backEnd.currentEntity != &tr.worldEntity ||
+        backEnd.currentEntity->e.renderfx ||
+        !backEnd.viewParms.stefxSplitView) return STEFX_WorldReject(2);
+    if (!s_worldSpanCount || s_worldCovered != tess.numVertexes) return STEFX_WorldReject(3);
+    const shaderStage_t *stage = &tess.xstages[tess.currentPass];
+    if (!stage->active || stage->isBumpMap || stage->isEnvironment || stage->ss)
+        return STEFX_WorldReject(4);
+    // Dynamic lights are applied in a later pass. Only the explicitly marked
+    // base material draw reaches this path, so its stable attributes can be
+    // reused even when the batch also needs lighting. Fog-modulated vertex
+    // colors remain dynamic; hardware fog state does not modify vertex data.
+    if (tess.fogNum && stage->adjustColorsForFog) return STEFX_WorldReject(1);
+    // These RGB generators set all four components. Thus AGEN_SKIP is safe
+    // here too; vertex-lit surfaces can follow mutable light styles.
+    if (stage->rgbGen != CGEN_IDENTITY && stage->rgbGen != CGEN_IDENTITY_LIGHTING &&
+        stage->rgbGen != CGEN_CONST) return STEFX_WorldReject(5);
+    if (stage->alphaGen != AGEN_IDENTITY && stage->alphaGen != AGEN_CONST &&
+        stage->alphaGen != AGEN_SKIP) return STEFX_WorldReject(6);
+    for (int b = 0; b < 2; ++b) {
+        if (!(b ? tex1 : tex0)) continue;
+        const textureBundle_t *bundle = &stage->bundle[b];
+        if (bundle->numTexMods ||
+            (bundle->tcGen != TCGEN_IDENTITY && bundle->tcGen != TCGEN_TEXTURE &&
+             bundle->tcGen != TCGEN_LIGHTMAP && bundle->tcGen != TCGEN_LIGHTMAP1 &&
+             bundle->tcGen != TCGEN_LIGHTMAP2 && bundle->tcGen != TCGEN_LIGHTMAP3 &&
+             bundle->tcGen != TCGEN_VECTOR)) return STEFX_WorldReject(7);
+    }
+    return true;
+}
+static void STEFX_WorldPackVertex(stefxWorldVertex_t &v, int i,
+    int normals, int tex0, int tex1) {
+    memset(&v, 0, sizeof(v));
+    memcpy(v.xyz, tess.xyz[i], sizeof(v.xyz));
+    if (normals) memcpy(v.normal, tess.normal[i], sizeof(v.normal));
+    v.color = glw_state->colorArrayState ? tess.svars.colors[i] : glw_state->currentColor;
+    if (tex0) memcpy(v.uv0, tess.svars.texcoords[0][i], sizeof(v.uv0));
+    if (tex1) memcpy(v.uv1, tess.svars.texcoords[1][i], sizeof(v.uv1));
+}
+static stefxWorldVertex_t *STEFX_WorldArraysClaim(int count, const GLushort *indices,
+    int normals, int tex0, int tex1);
+static void STEFX_WorldInitCvars(void) {
+    if (s_worldVertexCvar) return;
+#if defined(STEFX_SP_HOSTED_MP)
+    s_worldVertexCvar = Cvar_Get("r_efWorldVertices", "2", 0);
+    s_worldVerifyCvar = Cvar_Get("r_efWorldVerticesVerify", "0", 0);
+#else
+    // 0: original two slabs; 1: one-slab control; 2: one slab + resident world.
+    s_worldVertexCvar = Cvar_Get("r_efCoopWorldVertices", "0", 0);
+    s_worldVerifyCvar = Cvar_Get("r_efCoopWorldVerify", "0", 0);
+#endif
+}
+static stefxWorldVertex_t *STEFX_WorldVerticesClaim(GLenum mode, int count,
+    const GLushort *indices, int normals, int tex0, int tex1) {
+    s_worldArraysActive = false;
+    STEFX_WorldInitCvars();
+#if !defined(STEFX_SP_HOSTED_MP)
+    if (!s_coopWorldBorrowed || s_worldVertexCvar->integer != 2) return NULL;
+#endif
+    if (s_worldVertexCvar->integer < 1 || s_worldVertexCvar->integer > 2 || mode != GL_TRIANGLES ||
+        count <= 0 || count > SHADER_MAX_INDEXES ||
+        !STEFX_WorldStageStatic(normals, tex0, tex1)) return NULL;
+    ++g_SPXBWorldVertices[0]; // eligible draws
+    // Changing storage mode requires a map reset; never reinterpret live data.
+    if (s_worldAllocAttempted && s_worldStorageMode != s_worldVertexCvar->integer) return NULL;
+    if (s_worldVertexCvar->integer == 2)
+        return STEFX_WorldArraysClaim(count, indices, normals, tex0, tex1);
+    if (!s_worldAllocAttempted) {
+        s_worldAllocAttempted = true;
+        s_worldStorageMode = 1;
+        s_worldVertices = (stefxWorldVertex_t *)XPhysicalAlloc(
+            STEFX_WORLD_VERTEX_CAPACITY * sizeof(stefxWorldVertex_t),
+            MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
+        XBLog_WriteCriticalf("STEFX_WORLD_VERTICES: allocated=%u capacity=%u bytes=%u verify=%d",
+            s_worldVertices ? 1u : 0u, STEFX_WORLD_VERTEX_CAPACITY,
+            STEFX_WORLD_VERTEX_CAPACITY * sizeof(stefxWorldVertex_t), s_worldVerifyCvar->integer);
+    }
+    if (!s_worldVertices) return NULL;
+    const shaderStage_t *stage = &tess.xstages[tess.currentPass];
+    // Identity lighting and disabled color arrays are part of the immutable key.
+    unsigned int format = (normals ? 1u : 0u) | (tex0 ? 2u : 0u) | (tex1 ? 4u : 0u) |
+        (glw_state->colorArrayState ? 8u : 0u) | ((unsigned int)tr.identityLightByte << 8);
+    if (!glw_state->colorArrayState) return NULL;
+    for (int s = 0; s < s_worldSpanCount; ++s) {
+        const stefxWorldSpan_t &span = s_worldSpans[s];
+        unsigned int slot = (((unsigned int)span.surface >> 4) ^
+            ((unsigned int)stage >> 3) ^ format) & (STEFX_WORLD_VERTEX_KEYS - 1);
+        unsigned int probes;
+        stefxWorldVertexKey_t *key = NULL;
+        for (probes = 0; probes < STEFX_WORLD_VERTEX_KEYS; ++probes) {
+            key = &s_worldVertexKeys[slot];
+            if (!key->surface || (key->surface == span.surface && key->stage == stage &&
+                key->shader == tess.shader && key->format == format && key->count == span.count)) break;
+            slot = (slot + 1) & (STEFX_WORLD_VERTEX_KEYS - 1);
+        }
+        if (probes == STEFX_WORLD_VERTEX_KEYS || (!key->surface &&
+            (unsigned int)span.count > STEFX_WORLD_VERTEX_CAPACITY - s_worldVertexUsed)) {
+            ++g_SPXBWorldVertices[4]; return NULL; // bounded fallback; never evict in-flight data
+        }
+        if (!key->surface) {
+            key->surface = span.surface; key->stage = stage; key->shader = tess.shader;
+            key->format = format; key->first = (unsigned short)s_worldVertexUsed;
+            key->count = (unsigned short)span.count;
+            for (int v = 0; v < span.count; ++v) {
+                stefxWorldVertex_t packed;
+                STEFX_WorldPackVertex(packed, span.first + v, normals, tex0, tex1);
+                memcpy(&s_worldVertices[s_worldVertexUsed + v], &packed, sizeof(packed));
+            }
+            s_worldVertexUsed += span.count;
+            ++g_SPXBWorldVertices[2];
+            g_SPXBWorldVertices[3] = s_worldVertexUsed;
+        } else {
+            ++g_SPXBWorldVertices[5]; // reused surfaces, independent of visible batch composition
+            if (s_worldVerifyCvar->integer) {
+                for (int v = 0; v < span.count; ++v) {
+                    stefxWorldVertex_t packed;
+                    STEFX_WorldPackVertex(packed, span.first + v, normals, tex0, tex1);
+                    if (memcmp(&s_worldVertices[key->first + v], &packed, sizeof(packed))) {
+                        ++g_SPXBWorldVertices[6];
+                        XBLog_WriteCriticalf("STEFX_WORLD_VERTICES: mismatch shader=%s pass=%d vertex=%d",
+                            tess.shader->name, tess.currentPass, v);
+                        s_worldVertexCvar->integer = 0;
+                        return NULL;
+                    }
+                }
+            }
+        }
+        for (int v = 0; v < span.count; ++v)
+            s_worldRemap[span.first + v] = (unsigned short)(key->first + v);
+    }
+    for (int i = 0; i < count; ++i) {
+        if (indices[i] >= tess.numVertexes) { ++g_SPXBWorldVertices[7]; return NULL; }
+        s_worldIndices[i] = s_worldRemap[indices[i]];
+    }
+    ++g_SPXBWorldVertices[1]; // successful persistent draws
+    return s_worldVertices;
+}
+
+// Expanded immutable triangles avoid a changing index list on each visible
+// world batch. Surface order and triangle order are retained exactly. The
+// source spans are exclusively immutable BSP faces/triangles, not model LODs,
+// generated effects, patches, or partial per-triangle visibility results.
+static stefxWorldVertex_t *STEFX_WorldArraysClaim(int count, const GLushort *indices,
+    int normals, int tex0, int tex1) {
+    if ((count % 3) || !glw_state->colorArrayState) return NULL;
+    memset(s_worldArraySeen, 0, sizeof(s_worldArraySeen));
+    s_worldArrayRunCount = s_worldArrayCommandCount = 0;
+    for (int s = 0; s < s_worldSpanCount; ++s) {
+        const stefxWorldSpan_t &span = s_worldSpans[s];
+        for (int v = 0; v < span.count; ++v) s_worldVertexOwners[span.first + v] = (unsigned short)s;
+    }
+    int previous = -1;
+    for (int i = 0; i < count; i += 3) {
+        if (indices[i] >= tess.numVertexes || indices[i+1] >= tess.numVertexes || indices[i+2] >= tess.numVertexes) {
+            ++g_SPXBWorldVertices[7]; return NULL;
+        }
+        int owner = s_worldVertexOwners[indices[i]];
+        if (owner != s_worldVertexOwners[indices[i+1]] || owner != s_worldVertexOwners[indices[i+2]]) {
+            ++g_SPXBWorldArrays[3]; return NULL;
+        }
+        if (owner != previous) {
+            if (s_worldArraySeen[owner] || s_worldArrayRunCount == SHADER_MAX_VERTEXES) {
+                ++g_SPXBWorldArrays[3]; return NULL;
+            }
+            s_worldArraySeen[owner] = 1;
+            stefxWorldArrayRun_t &run = s_worldArrayRuns[s_worldArrayRunCount++];
+            run.span = owner; run.indexFirst = i; run.count = 0;
+            previous = owner;
+        }
+        s_worldArrayRuns[s_worldArrayRunCount-1].count += 3;
+    }
+    for (int r = 0; r < s_worldArrayRunCount; ++r)
+        s_worldArrayCommandCount += (s_worldArrayRuns[r].count + 254) / 255;
+    // Bound the native multi-range packet; unusual fragmented batches retain
+    // the existing indexed path. 255 vertices keeps every range triangle-aligned.
+    if (s_worldArrayCommandCount > 511) { ++g_SPXBWorldArrays[3]; return NULL; }
+    if (!s_worldAllocAttempted) {
+        s_worldAllocAttempted = true; s_worldStorageMode = 2;
+#if defined(STEFX_SP_HOSTED_MP)
+        s_worldVertices = (stefxWorldVertex_t *)XPhysicalAlloc(
+            STEFX_WORLD_ARRAY_CAPACITY * sizeof(stefxWorldVertex_t),
+            MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
+#else
+        s_worldVertices = (stefxWorldVertex_t *)s_stefxScratchBase[1];
+#endif
+        XBLog_WriteCriticalf("STEFX_WORLD_ARRAYS: allocated=%u capacity=%u bytes=%u verify=%d",
+            s_worldVertices ? 1u : 0u, STEFX_WORLD_ARRAY_CAPACITY,
+            STEFX_WORLD_ARRAY_CAPACITY * sizeof(stefxWorldVertex_t), s_worldVerifyCvar->integer);
+    }
+    if (!s_worldVertices) return NULL;
+    const shaderStage_t *stage = &tess.xstages[tess.currentPass];
+    unsigned int format = (normals ? 1u : 0u) | (tex0 ? 2u : 0u) | (tex1 ? 4u : 0u) |
+        8u | ((unsigned int)tr.identityLightByte << 8);
+    for (int r = 0; r < s_worldArrayRunCount; ++r) {
+        stefxWorldArrayRun_t &run = s_worldArrayRuns[r];
+        const stefxWorldSpan_t &span = s_worldSpans[run.span];
+        unsigned int slot = (((unsigned int)span.surface >> 4) ^ ((unsigned int)stage >> 3) ^ format) & (STEFX_WORLD_VERTEX_KEYS - 1);
+        stefxWorldVertexKey_t *key = NULL;
+        unsigned int probes;
+#if defined(STEFX_SP_HOSTED_MP)
+        const unsigned int probeLimit = STEFX_WORLD_VERTEX_KEYS;
+#else
+        const unsigned int probeLimit = STEFX_COOP_WORLD_MAX_PROBES;
+#endif
+        for (probes = 0; probes < probeLimit; ++probes) {
+            key = &s_worldVertexKeys[slot];
+            if (!key->surface || (key->surface == span.surface && key->stage == stage &&
+                key->shader == tess.shader && key->format == format && key->count == span.count)) break;
+            slot = (slot + 1) & (STEFX_WORLD_VERTEX_KEYS - 1);
+        }
+        if (probes == probeLimit || (!key->surface &&
+            (unsigned int)run.count > STEFX_WORLD_ARRAY_CAPACITY - s_worldVertexUsed)) {
+            ++g_SPXBWorldVertices[4]; ++g_SPXBWorldArrays[4]; return NULL;
+        }
+        if (!key->surface) {
+            key->surface = span.surface; key->stage = stage; key->shader = tess.shader;
+            key->format = format; key->first = (unsigned short)s_worldVertexUsed;
+            key->count = (unsigned short)span.count;
+            s_worldArrayCounts[slot] = (unsigned short)run.count;
+            for (int v = 0; v < run.count; ++v) {
+                int source = indices[run.indexFirst + v];
+                stefxWorldVertex_t packed;
+                STEFX_WorldPackVertex(packed, source, normals, tex0, tex1);
+                packed.pad = source - span.first; // topology witness; not a GPU attribute
+                memcpy(&s_worldVertices[s_worldVertexUsed + v], &packed, sizeof(packed));
+            }
+            s_worldVertexUsed += run.count;
+            ++g_SPXBWorldVertices[2]; g_SPXBWorldVertices[3] = s_worldVertexUsed;
+        } else {
+            if (s_worldArrayCounts[slot] != run.count) { ++g_SPXBWorldArrays[3]; return NULL; }
+            ++g_SPXBWorldVertices[5];
+        }
+        if (s_worldVerifyCvar->integer) {
+            for (int v = 0; v < run.count; ++v) {
+                int source = indices[run.indexFirst + v];
+                stefxWorldVertex_t packed;
+                STEFX_WorldPackVertex(packed, source, normals, tex0, tex1);
+                packed.pad = source - span.first;
+                ++g_SPXBWorldArrays[5];
+                if (memcmp(&s_worldVertices[key->first + v], &packed, sizeof(packed))) {
+                    ++g_SPXBWorldVertices[6]; ++g_SPXBWorldArrays[6];
+                    XBLog_WriteCriticalf("STEFX_WORLD_ARRAYS: mismatch shader=%s pass=%d vertex=%d",
+                        tess.shader->name, tess.currentPass, v);
+                    s_worldVertexCvar->integer = 0;
+                    return NULL;
+                }
+            }
+        }
+        run.vertexFirst = key->first;
+    }
+    s_worldArraysActive = true;
+    ++g_SPXBWorldArrays[0]; g_SPXBWorldArrays[1] = s_worldVertexUsed;
+    g_SPXBWorldArrays[2] += s_worldArrayCommandCount; g_SPXBWorldArrays[7] = 2;
+    ++g_SPXBWorldVertices[1];
+    return s_worldVertices;
+}
+
+static DWORD *STEFX_WorldArraysWrite(DWORD *packet, unsigned int primitive) {
+    *packet++ = D3DPUSH_ENCODE(D3DPUSH_SET_BEGIN_END, 1);
+    *packet++ = primitive;
+    *packet++ = D3DPUSH_ENCODE(D3DPUSH_NOINCREMENT_FLAG | 0x1810, s_worldArrayCommandCount);
+    for (int r = 0; r < s_worldArrayRunCount; ++r) {
+        unsigned int first = s_worldArrayRuns[r].vertexFirst;
+        int remaining = s_worldArrayRuns[r].count;
+        while (remaining) {
+            unsigned int vertices = remaining > 255 ? 255 : remaining;
+            *packet++ = first | ((vertices - 1u) << 24);
+            first += vertices; remaining -= vertices;
+        }
+    }
+    return packet; // existing caller emits END and submits the packet
+}
+#if !defined(STEFX_SP_HOSTED_MP)
+// STEFX_COOP_WORLD_CONFIGURE_BEGIN
+static void STEFX_CoopWorldConfigure(void) {
+    STEFX_WorldInitCvars();
+    const int mode = s_worldVertexCvar->integer;
+    const bool borrow = (mode == 1 || mode == 2) && Cvar_VariableIntegerValue("stefx_splitScreen") && s_stefxScratchReady &&
+        s_stefxScratchBase[1] &&
+        s_stefxScratchCapacityDwords * sizeof(DWORD) >= STEFX_WORLD_ARRAY_CAPACITY * sizeof(stefxWorldVertex_t);
+    if (borrow != s_coopWorldBorrowed) {
+        if (!glw_state || !glw_state->device) return;
+        // The second slab may still belong to earlier GPU draws. Fence all
+        // prior users before either making it immutable or returning it.
+        glw_state->device->BlockUntilIdle();
+        STEFX_WorldVerticesReset();
+        s_coopWorldBorrowed = borrow;
+        s_stefxScratchBufferCount = borrow ? 1 : 2;
+        s_stefxScratchIndex = 0;
+        s_stefxScratchOffset = 0;
+        g_SPXBScratchLayoutProof[0] = s_stefxScratchBufferCount;
+        ++g_SPXBCoopWorldStorage[7];
+        XBLog_WriteCriticalf("STEFX_COOP_WORLD_STORAGE: mode=%d borrowed=%d scratchBuffers=%d physicalBytes=%u",
+            mode, borrow ? 1 : 0, s_stefxScratchBufferCount,
+            2u * s_stefxScratchCapacityDwords * sizeof(DWORD));
+    }
+    g_SPXBCoopWorldStorage[0] = mode;
+    g_SPXBCoopWorldStorage[1] = s_coopWorldBorrowed ? 1 : 0;
+    g_SPXBCoopWorldStorage[2] = s_stefxScratchBufferCount;
+    g_SPXBCoopWorldStorage[3] = s_stefxScratchReady ? 2u * s_stefxScratchCapacityDwords * sizeof(DWORD) : 0;
+    g_SPXBCoopWorldStorage[4] = s_coopWorldBorrowed ? (unsigned int)s_stefxScratchBase[1] : 0;
+    g_SPXBCoopWorldStorage[5] = STEFX_WORLD_ARRAY_CAPACITY * sizeof(stefxWorldVertex_t);
+    g_SPXBCoopWorldStorage[6] = sizeof(s_worldVertexKeys) + sizeof(s_worldSpans) + sizeof(s_worldRemap) +
+        sizeof(s_worldIndices) + sizeof(s_worldArrayRuns) + sizeof(s_worldArrayCounts) +
+        sizeof(s_worldVertexOwners) + sizeof(s_worldArraySeen);
+}
+// STEFX_COOP_WORLD_CONFIGURE_END
+#endif
+#endif
+
+// STEFX_WORLD_VERTICES_END
+
+// STEFX_INTERLEAVED_VERTICES_BEGIN
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
+struct stefxPackedLayout_t {
+    unsigned int stride, normal, color, tex0, tex1; // byte offsets
+};
+extern "C" volatile unsigned int g_SPXBInterleavedVertices[8] = {0};
+static cvar_t *s_interleavedCvar;
+static cvar_t *s_interleavedVerifyCvar;
+
+static stefxPackedLayout_t STEFX_PackedLayout(int normals, int tex0, int tex1)
+{
+    stefxPackedLayout_t l;
+    l.normal = 12;
+    l.color = 12 + (normals ? 12 : 0);
+    l.tex0 = l.color + 4;
+    l.tex1 = l.tex0 + (tex0 ? 8 : 0);
+    l.stride = l.tex1 + (tex1 ? 8 : 0);
+    return l;
+}
+
+static bool STEFX_InterleavedWanted(void)
+{
+    if (!s_interleavedCvar) {
+        s_interleavedCvar = Cvar_Get("r_efInterleavedVertices", "0", 0);
+        s_interleavedVerifyCvar = Cvar_Get("r_efInterleavedVerify", "0", 0);
+    }
+    return s_interleavedCvar->integer && !backEnd.projection2D &&
+        backEnd.viewParms.stefxSplitView && tess.numVertexes > 0 &&
+        tess.numVertexes <= SHADER_MAX_VERTEXES;
+}
+
+static void STEFX_PackInterleaved(DWORD *destination, const stefxPackedLayout_t &l,
+                                int normals, int tex0, int tex1)
+{
+    unsigned char *p = (unsigned char *)destination;
+    for (int v = 0; v < tess.numVertexes; ++v, p += l.stride) {
+        // The GPU declaration reads FLOAT3; the fourth source component was
+        // never consumed. Copy bits, including signed zero, without arithmetic.
+        memcpy(p, tess.xyz[v], 12);
+        if (normals) memcpy(p + l.normal, tess.normal[v], 12);
+        const DWORD color = glw_state->colorArrayState ?
+            tess.svars.colors[v] : glw_state->currentColor;
+        memcpy(p + l.color, &color, 4);
+        if (tex0) memcpy(p + l.tex0, tess.svars.texcoords[0][v], 8);
+        if (tex1) memcpy(p + l.tex1, tess.svars.texcoords[1][v], 8);
+    }
+}
+
+static bool STEFX_VerifyInterleaved(const DWORD *source, const stefxPackedLayout_t &l,
+                                  int normals, int tex0, int tex1)
+{
+    const unsigned char *p = (const unsigned char *)source;
+    for (int v = 0; v < tess.numVertexes; ++v, p += l.stride) {
+        const DWORD color = glw_state->colorArrayState ?
+            tess.svars.colors[v] : glw_state->currentColor;
+        if (memcmp(p, tess.xyz[v], 12) ||
+            (normals && memcmp(p + l.normal, tess.normal[v], 12)) ||
+            memcmp(p + l.color, &color, 4) ||
+            (tex0 && memcmp(p + l.tex0, tess.svars.texcoords[0][v], 8)) ||
+            (tex1 && memcmp(p + l.tex1, tess.svars.texcoords[1][v], 8))) return false;
+    }
+    return true;
+}
+#endif
+// STEFX_INTERLEAVED_VERTICES_END
+
 
 #if !defined(FINAL_BUILD) && !defined(_XBOX_VC71_MIGRATION)
 #include <d3d8perf.h>
@@ -402,6 +960,11 @@ static void STEFX_RecordSplitWorldPayloadReuse( GLenum mode, GLsizei count,
 	const GLushort *indices, qboolean normals, qboolean tex0, qboolean tex1,
 	unsigned int reserveDwords )
 {
+	// Full payload hashes are a separate reuse experiment, not ordinary timing.
+	// Keep their CPU cost out of draw-kind diagnosis unless explicitly requested.
+	static cvar_t *reuseProbe;
+	if (!reuseProbe) reuseProbe = Cvar_Get("r_efReuseProbe", "0", 0);
+	if (!reuseProbe->integer) return;
 	stefxSplitReuseKey_t candidate;
 	unsigned __int64 start;
 	unsigned int slotBit;
@@ -1106,7 +1669,11 @@ void ReserveRetailTexturePoolsEarly( void )
 	if (!s_texturePoolMemoryReserved)
 	{
 		gStaticTextures.Reserve( 10 * 1024 * 1024 );
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+		gSkinTextures.Reserve( 2 * 1024 * 1024 );
+#else
 		gSkinTextures.Reserve( 4 * 1024 * 1024 );
+#endif
 		s_texturePoolMemoryReserved = true;
 	}
 }
@@ -1178,6 +1745,14 @@ extern "C" unsigned int STEFX_StaticTextureCapacity( void )
 extern "C" unsigned int STEFX_SkinTextureUsed( void )
 {
 	return gSkinTextures.Size();
+}
+
+extern "C" void STEFX_ReportTexturePools( void )
+{
+	XBLog_WriteCriticalf("STEFX_HW_TEXTURE_POOLS: staticUsed=%u staticCap=%u skinUsed=%u skinCap=%u skinPeak=%u swaps=%u fetches=%u readBytes=%u writeBytes=%u",
+		gStaticTextures.Size(), gStaticTextures.Capacity(), gSkinTextures.Size(),
+		gSkinTextures.Capacity(), gSkinTextures.Peak(), gSkinTextures.SwapCount(),
+		gSkinTextures.FetchCount(), gSkinTextures.BytesRead(), gSkinTextures.BytesWritten());
 }
 
 extern "C" unsigned int STEFX_SkinTextureCapacity( void )
@@ -1903,6 +2478,46 @@ Get the texture information for the currently
 bound texture at a stage.
 =================
 */
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+extern "C" __declspec(dllexport) volatile unsigned int g_SPXBStasisD3D[48] = {0};
+static void STEFX_TraceStasisD3D(void)
+{
+	if (!tess.shader || Q_stricmp(tess.shader->name, "textures/stasis/scum_256")) return;
+	volatile unsigned int *r = g_SPXBStasisD3D;
+	++r[0];
+	if ((r[0] & 255u) != 1u) return;
+	++r[1]; r[2] = tess.shader->index;
+	DWORD shader = 0; glw_state->device->GetVertexShader(&shader);
+	r[3] = shader; r[4] = glw_state->shaderMask; r[5] = glw_state->drawStride;
+	r[6] = (glw_state->texCoordArrayState[0] ? 1u : 0u) | (glw_state->texCoordArrayState[1] ? 2u : 0u);
+	r[7] = glw_state->colorArrayState;
+	for (int stage = 0; stage < 2; ++stage)
+	{
+		volatile unsigned int *s = r + 8 + stage * 16;
+		glwstate_t::texturexlat_t::iterator it = glw_state->textureXlat.find(glw_state->currentTexture[stage]);
+		IDirect3DBaseTexture8 *actual = NULL;
+		glw_state->device->GetTexture(stage, &actual);
+		s[0] = glw_state->currentTexture[stage];
+		s[1] = it == glw_state->textureXlat.end() ? 0 : (unsigned int)it->second.mipmap;
+		s[2] = (unsigned int)actual;
+		s[3] = glw_state->textureStageEnable[stage];
+		if (s[1] != s[2]) ++r[40];
+		if (actual) actual->Release();
+		D3DTEXTURESTAGESTATETYPE types[8] = {D3DTSS_COLOROP, D3DTSS_COLORARG1, D3DTSS_COLORARG2,
+			D3DTSS_ALPHAOP, D3DTSS_TEXCOORDINDEX, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTSS_ADDRESSU, D3DTSS_ADDRESSV};
+		for (int i = 0; i < 8; ++i) { DWORD value=0; glw_state->device->GetTextureStageState(stage, types[i], &value); s[4+i]=value; }
+		s[12] = glw_state->textureEnv[stage]; s[13] = glw_state->texCoordStride[stage];
+		if (glw_state->texCoordArrayState[stage] && glw_state->texCoordPointer[stage])
+		{
+			const unsigned int *uv = (const unsigned int *)glw_state->texCoordPointer[stage];
+			s[14] = uv[0]; s[15] = uv[1];
+			if (uv[0] != ((const unsigned int *)tess.svars.texcoords[stage])[0] ||
+				uv[1] != ((const unsigned int *)tess.svars.texcoords[stage])[1]) ++r[41];
+		}
+	}
+}
+#endif
+
 static glwstate_t::TextureInfo* _getCurrentTexture(int stage)
 {
 	glwstate_t::texturexlat_t::iterator i = glw_state->textureXlat.find(
@@ -3271,6 +3886,16 @@ static void dllDepthRange(GLclampd zNear, GLclampd zFar)
 }
 
 #ifdef _XBOX
+// Preserve scan mode and aspect ratio when changing the presentation interval.
+// Ratio of displayed pixel width to pixel height for the active framebuffer.
+float GLW_GetPixelAspect(void)
+{
+    if (!glw_state || !glw_state->isWidescreen || glConfig.vidWidth <= 0 || glConfig.vidHeight <= 0)
+        return 1.0f;
+    return (16.0f / 9.0f) * (float)glConfig.vidHeight / (float)glConfig.vidWidth;
+}
+
+static DWORD s_xboxPresentationFlags = 0;
 static void setPresent(bool vsync)
 {
 	//extern void ShowOSMemory();
@@ -3287,7 +3912,7 @@ static void setPresent(bool vsync)
 	pp.Windowed  = FALSE;
 	pp.EnableAutoDepthStencil = TRUE;
 	pp.AutoDepthStencilFormat = D3DFMT_D24S8;
-	pp.Flags = 0;
+	pp.Flags = s_xboxPresentationFlags;
 	pp.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
 	pp.FullScreen_PresentationInterval = 
 		vsync ? D3DPRESENT_INTERVAL_DEFAULT : D3DPRESENT_INTERVAL_IMMEDIATE;
@@ -3647,6 +4272,34 @@ static void PushIndices(GLsizei count, const GLushort *indices)
 }
 
 // NOTE: This is a core draw routine.  It should be fast.
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+extern "C" volatile unsigned int g_SPXBPerfDrawKindsCurrent[48];
+extern "C" volatile unsigned int g_SPXBPerfModelDrawsCurrent[2056];
+// STEFX_MODEL_DRAW_PROFILE_BEGIN
+static void STEFX_RecordModelDraw(unsigned int handle, unsigned int shader,
+    unsigned int model, unsigned int vertices, unsigned int indices,
+    unsigned int cycles, unsigned int beginCycles)
+{
+    // Power-of-two hash table bounds diagnostic lookup work; the last row
+    // always retains totals for keys that do not fit. Never evict frame data.
+    unsigned int slot = ((handle * 2654435761u) ^ (shader >> 4)) & 255u;
+    unsigned int probe;
+    for (probe = 0; probe < 256; ++probe) {
+        volatile unsigned int *candidate = g_SPXBPerfModelDrawsCurrent + slot * 8;
+        if (!candidate[2] || (candidate[0] == handle && candidate[1] == shader)) break;
+        slot = (slot + 1u) & 255u;
+    }
+    if (probe == 256) slot = 256;
+    volatile unsigned int *row = g_SPXBPerfModelDrawsCurrent + slot * 8;
+    row[0] = slot == 256 ? 0xffffffffu : handle;
+    row[1] = slot == 256 ? 0 : shader;
+    ++row[2]; row[3] += vertices; row[4] += indices;
+    row[5] += cycles; row[6] += beginCycles;
+    row[7] = slot == 256 ? 0 : model;
+}
+// STEFX_MODEL_DRAW_PROFILE_END
+#endif
+#include "stefx_coop_model_resident.h"
 static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
 {
 	int normals, tex0, tex1, num_streams = 2;
@@ -3677,6 +4330,9 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 	unsigned __int64 xboxDrawStart = 0;
 	unsigned __int64 xboxPhaseStart = 0;
 	unsigned int xboxPhaseCycles = 0;
+	const unsigned int kindBeginBefore = g_SPXBPerfDrawBeginPushCyclesCurrent;
+	const unsigned int kindPackBefore = g_SPXBPerfDrawPackCyclesCurrent;
+	const unsigned int kindStateBefore = g_SPXBPerfDrawStateCyclesCurrent;
 	if (xboxPerfSample) {
 		xboxDrawStart = STEFX_XboxReadTsc();
 		++g_SPXBPerfSubmitCallsCurrent;
@@ -3708,6 +4364,9 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 	_updateShader(normals, tex0, tex1);
 	_updateTextures();
 	_updateMatrices();
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+	STEFX_TraceStasisD3D();
+#endif
 #ifdef _XBOX
 	g_SPXBNativeSubmitStage = 0x4E440001; /* 'ND01': state ready */
 #endif
@@ -3848,19 +4507,47 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 	}
 #endif
 
-	int vert_size = glw_state->drawStride * tess.numVertexes;
+	DWORD *modelPayload = NULL;
+	int payloadVertices = tess.numVertexes;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	modelPayload = (DWORD *)STEFX_CoopModelClaim(mode,count,(const GLushort *)indices,normals,tex0,tex1);
+#endif
+	int vert_size = glw_state->drawStride * payloadVertices;
 	int index_size = count / 2;
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+	stefxWorldVertex_t *worldPayload = STEFX_WorldVerticesClaim(mode, count,
+		(const GLushort *)indices, normals, tex0, tex1);
+	if (worldPayload && s_worldArraysActive) index_size = s_worldArrayCommandCount;
+#else
+	DWORD *worldPayload = NULL;
+#endif
+	DWORD *residentPayload = worldPayload ? (DWORD *)worldPayload : modelPayload;
 #ifdef _XBOX
 	DWORD *scratchPayload = NULL;
-	if (s_stefxScratchFrameActive)
+	bool interleavedPayload = false;
+	unsigned int interleavedStride = 0;
+#if defined(STEFX_SP_HOSTED_MP)
+	stefxPackedLayout_t packedLayout;
+	if (!worldPayload && STEFX_InterleavedWanted()) {
+		interleavedPayload = true;
+		packedLayout = STEFX_PackedLayout(normals, tex0, tex1);
+		interleavedStride = packedLayout.stride;
+		++g_SPXBInterleavedVertices[7];
+		g_SPXBInterleavedVertices[2] += vert_size * 4 - interleavedStride * tess.numVertexes;
+		vert_size = (interleavedStride / 4) * tess.numVertexes;
+	}
+#endif
+	if (!residentPayload && s_stefxScratchFrameActive)
 	{
 		scratchPayload = STEFX_ScratchClaim((unsigned int)vert_size);
 	}
-	int push_reserve_dwords = scratchPayload
+	int push_reserve_dwords = (residentPayload || scratchPayload)
 		? (index_size + 60)
 		: (vert_size + index_size + 60);
 	g_SPXBNativeSubmitReserve = (unsigned int)push_reserve_dwords;
 #else
+	bool interleavedPayload = false;
+	unsigned int interleavedStride = 0;
 	int push_reserve_dwords = vert_size + index_size + 60;
 #endif
 
@@ -3938,6 +4625,9 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 #endif
 
 	DWORD *stream = 0, *payload = 0;
+	if (residentPayload) {
+		stream = residentPayload;
+	} else {
 
 #ifdef _XBOX
 	if (scratchPayload)
@@ -3957,7 +4647,33 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 
 	// Set up our own fake vertex buffer
 	stream = payload;
-
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
+	if (interleavedPayload) {
+		STEFX_PackInterleaved(payload, packedLayout, normals, tex0, tex1);
+		++g_SPXBInterleavedVertices[0];
+		if (g_SPXBInterleavedVertices[0] == 1) {
+			XBLog_WriteCriticalf("STEFX_INTERLEAVED: active stride=%u normals=%d tex=%d/%d verify=%d",
+				interleavedStride, normals ? 1 : 0, tex0 ? 1 : 0, tex1 ? 1 : 0,
+				s_interleavedVerifyCvar->integer);
+		}
+		g_SPXBInterleavedVertices[1] += tess.numVertexes;
+		g_SPXBInterleavedVertices[6] = interleavedStride;
+		if (!scratchPayload) ++g_SPXBInterleavedVertices[3];
+		if (s_interleavedVerifyCvar->integer) {
+			g_SPXBInterleavedVertices[4] += tess.numVertexes;
+			if (!STEFX_VerifyInterleaved(payload, packedLayout, normals, tex0, tex1)) {
+				++g_SPXBInterleavedVertices[5];
+				XBLog_WriteCriticalf("STEFX_INTERLEAVED: verification failed shader=%s stride=%u", tess.shader->name, interleavedStride);
+				s_interleavedCvar->integer = 0;
+				glw_state->device->EndPush(pushBase);
+				glw_state->inDrawBlock = false;
+				return;
+			}
+		}
+		payload += vert_size;
+	} else
+#endif
+	{
 	memcpy(payload, tess.xyz, sizeof(vec4_t) * tess.numVertexes);
 	payload += tess.numVertexes * 4;
 
@@ -3989,6 +4705,7 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 		memcpy(payload, tess.svars.texcoords[1], sizeof(vec2_t) * tess.numVertexes);
 		payload += tess.numVertexes * 2;
 	}
+	} // original planar packing
 
 #ifdef _XBOX
 	if (!scratchPayload)
@@ -3996,12 +4713,16 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 	{
 		glw_state->drawArray = payload;
 	}
+	} // dynamic vertex packing
+	const unsigned int xyzStride = residentPayload ? 48u : (interleavedPayload ? interleavedStride : 16u);
+	const unsigned int colorStride = residentPayload ? 48u : (interleavedPayload ? interleavedStride : 4u);
+	const unsigned int texStride = residentPayload ? 48u : (interleavedPayload ? interleavedStride : 8u);
 
 	// Write the vertex shader
 #define CMD_STREAM_STRIDEANDTYPE0 0x1760
 	{
 	*glw_state->drawArray++ = D3DPUSH_ENCODE(CMD_STREAM_STRIDEANDTYPE0, 16);
-	*glw_state->drawArray++ = (16 << 8)|D3DVSDT_FLOAT3;
+	*glw_state->drawArray++ = (xyzStride << 8)|D3DVSDT_FLOAT3;
 
 	if(1)
 	{
@@ -4010,14 +4731,14 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 
 	if(normals)
 	{
-		*glw_state->drawArray++ = (16 << 8) | D3DVSDT_FLOAT3;
+		*glw_state->drawArray++ = (xyzStride << 8) | D3DVSDT_FLOAT3;
 	}
 	else
 	{
 		*glw_state->drawArray++ = ((glw_state->drawStride * 4) << 8) | D3DVSDT_NONE;
 	}
 
-	*glw_state->drawArray++ = (4 << 8) | D3DVSDT_D3DCOLOR;
+	*glw_state->drawArray++ = (colorStride << 8) | D3DVSDT_D3DCOLOR;
 
 	for(int i = 0; i < 5; i++)
 	{
@@ -4026,7 +4747,7 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 
 	if(tex0)
 	{
-		*glw_state->drawArray++ = (8 << 8) | D3DVSDT_FLOAT2;
+		*glw_state->drawArray++ = (texStride << 8) | D3DVSDT_FLOAT2;
 	}
 	else
 	{
@@ -4035,7 +4756,7 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 
 	if(tex1)
 	{
-		*glw_state->drawArray++ = (8 << 8) | D3DVSDT_FLOAT2;
+		*glw_state->drawArray++ = (texStride << 8) | D3DVSDT_FLOAT2;
 	}
 	else
 	{
@@ -4057,25 +4778,27 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 
 	*glw_state->drawArray++ = D3DPUSH_ENCODE(CMD_VERTEXSTREAM_XYZ, 1);
 	*glw_state->drawArray++ = (DWORD)stream & 0x7fffffff;
-	stream += tess.numVertexes * 4;//3;
+	stream += (residentPayload || interleavedPayload) ? 3 : payloadVertices * 4;
 
 	if(normals)
 	{
 		*glw_state->drawArray++ = D3DPUSH_ENCODE(CMD_VERTEXSTREAM_NORMAL, 1);
 		*glw_state->drawArray++ = (DWORD)stream & 0x7fffffff;
-		stream += tess.numVertexes * 4;//3;
+		stream += (residentPayload || interleavedPayload) ? 3 : payloadVertices * 4;
 	}
+	if (residentPayload) stream = residentPayload + 6;
 
 	*glw_state->drawArray++ = D3DPUSH_ENCODE(CMD_VERTEXSTREAM_COLOR, 1);
 	*glw_state->drawArray++ = (DWORD)stream & 0x7fffffff;
-	stream += tess.numVertexes;//1;
+	stream += (residentPayload || interleavedPayload) ? 1 : payloadVertices;
 
 	if(tex0)
 	{
 		*glw_state->drawArray++ = D3DPUSH_ENCODE(CMD_VERTEXSTREAM_TEX0, 1);
 		*glw_state->drawArray++ = (DWORD)stream & 0x7fffffff;
-		stream += tess.numVertexes * 2;//2;
+		stream += (residentPayload || interleavedPayload) ? 2 : payloadVertices * 2;
 	}
+	if (residentPayload) stream = residentPayload + 9;
 
 	if(tex1)
 	{
@@ -4090,7 +4813,17 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 		xboxPhaseStart = STEFX_XboxReadTsc();
 	}
 #endif
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+	if (worldPayload && s_worldArraysActive) {
+		glw_state->drawArray = STEFX_WorldArraysWrite(glw_state->drawArray, glw_state->primitiveMode);
+		glw_state->totalIndices = 0;
+		glw_state->numIndices = count;
+	} else {
+		PushIndices(count, worldPayload ? s_worldIndices : (GLushort*)indices);
+	}
+#else
 	PushIndices(count, (GLushort*)indices);
+#endif
 #ifdef _XBOX
 	g_SPXBNativeSubmitStage = 0x4E440006; /* 'ND06': indexes packed */
 #endif
@@ -4106,7 +4839,9 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 	DWORD* push = _terminateIndexPacket(glw_state->drawArray);
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && defined(STEFX_SP_HOSTED_MP)
-	STEFX_TraceShaderPackedDraw(
+	// Persistent interleaved vertices use their own byte-for-byte verifier.
+	// The legacy tracer expects a freshly packed, planar tess payload.
+	if (!worldPayload && !interleavedPayload) STEFX_TraceShaderPackedDraw(
 		scratchPayload ? scratchPayload : pushBase + 1,
 		normals ? qtrue : qfalse,
 		tex0 ? qtrue : qfalse, tex1 ? qtrue : qfalse,
@@ -4128,6 +4863,26 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 	if (xboxPerfSample) {
 		g_SPXBPerfDrawSubmitCyclesCurrent += STEFX_XboxElapsedCycles(xboxPhaseStart);
 		g_SPXBPerfDrawCyclesCurrent += STEFX_XboxElapsedCycles(xboxDrawStart);
+		int kind;
+		if (backEnd.projection2D) kind = 0;
+		else if (backEnd.currentEntity == &tr.worldEntity)
+			kind = worldPayload ? 1 : (g_stefxWorldBasePass ? 2 : 3);
+		else kind = backEnd.currentEntity && backEnd.currentEntity->e.reType == RT_MODEL ? 4 : 5;
+		volatile unsigned int *k = g_SPXBPerfDrawKindsCurrent + kind * 8;
+		++k[0]; k[1] += tess.numVertexes; k[2] += count;
+		k[3] += STEFX_XboxElapsedCycles(xboxDrawStart);
+		k[4] += g_SPXBPerfDrawBeginPushCyclesCurrent - kindBeginBefore;
+		k[5] += g_SPXBPerfDrawPackCyclesCurrent - kindPackBefore;
+		k[6] += g_SPXBPerfDrawStateCyclesCurrent - kindStateBefore;
+		k[7] += push_reserve_dwords;
+		if (kind == 4) {
+			STEFX_RecordModelDraw((unsigned int)backEnd.currentEntity->e.hModel,
+				(unsigned int)tess.shader,
+				(unsigned int)R_GetModelByHandle(backEnd.currentEntity->e.hModel),
+				(unsigned int)tess.numVertexes, (unsigned int)count,
+				STEFX_XboxElapsedCycles(xboxDrawStart),
+				g_SPXBPerfDrawBeginPushCyclesCurrent - kindBeginBefore);
+		}
 	}
 #endif
 }
@@ -5322,6 +6077,135 @@ static void dllLightfv(GLenum light, GLenum pname, const GLfloat *params)
 		glw_state->device->LightEnable(1, false);
 }
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+// Co-op only. Complete one light before submitting it; never cache device state
+// across draws, views, state blocks or device resets.
+// mode, requests, original SetLight calls, combined SetLight calls, restores,
+// verified, mismatches, API failures, failure latch, sampled cycles/calls/max,
+// avoided SetLight/LightEnable calls, reserved, reserved.
+extern "C" volatile unsigned int g_SPXBCoopLight[16]={0};
+static bool s_coopLightFailed;
+
+// STEFX_COOP_DIFFUSE_LIGHT_BEGIN
+static void STEFX_CoopOriginalLight(trRefEntity_t *ent) {
+	qglLightfv(0,GL_AMBIENT,ent->ambientLight);
+	qglLightfv(0,GL_DIFFUSE,ent->directedLight);
+	if (VectorLengthSquared(ent->lightDir)<=0.0001f) {
+		ent->lightDir[0]=0.0f; ent->lightDir[1]=1.0f; ent->lightDir[2]=0.0f;
+	}
+	qglLightfv(0,GL_SPOT_DIRECTION,ent->lightDir);
+	g_SPXBCoopLight[2]+=3;
+}
+
+static bool STEFX_CoopCombinedLight(trRefEntity_t *ent) {
+	D3DLIGHT8 &light=glw_state->dirLight[0];
+	light.Ambient.r=ent->ambientLight[0]/255.0f;
+	light.Ambient.g=ent->ambientLight[1]/255.0f;
+	light.Ambient.b=ent->ambientLight[2]/255.0f;
+	light.Diffuse.r=ent->directedLight[0]/255.0f;
+	light.Diffuse.g=ent->directedLight[1]/255.0f;
+	light.Diffuse.b=ent->directedLight[2]/255.0f;
+	if (VectorLengthSquared(ent->lightDir)<=0.0001f) {
+		ent->lightDir[0]=0.0f; ent->lightDir[1]=1.0f; ent->lightDir[2]=0.0f;
+	}
+	light.Direction.x=-ent->lightDir[0];
+	light.Direction.y=-ent->lightDir[1];
+	light.Direction.z=-ent->lightDir[2];
+	if (light.Direction.x*light.Direction.x+light.Direction.y*light.Direction.y+
+		light.Direction.z*light.Direction.z<=0) light.Direction.x=1.0f;
+	++g_SPXBCoopLight[3];
+	const HRESULT set=glw_state->device->SetLight(0,&light);
+	const HRESULT enable=glw_state->device->LightEnable(0,TRUE);
+	const HRESULT disable=glw_state->device->LightEnable(1,FALSE);
+	return SUCCEEDED(set) && SUCCEEDED(enable) && SUCCEEDED(disable);
+}
+
+bool STEFX_CoopDiffuseLight(trRefEntity_t *ent) {
+	static cvar_t *mode,*split,*players,*game;
+	static unsigned int loggedModes;
+	if (!mode) {
+		mode=Cvar_Get("r_efCoopLight","0",0);
+		split=Cvar_Get("stefx_splitScreen","0",0);
+		players=Cvar_Get("stefx_splitScreenPlayers","1",0);
+		game=Cvar_Get("stefx_splitScreenMode","coop",0);
+	}
+	int selected=mode->integer;
+	if (!ent || !glw_state || !glw_state->device || s_coopLightFailed ||
+		!split->integer || players->integer<2 || Q_stricmp(game->string,"coop") ||
+		!backEnd.viewParms.stefxSplitView || backEnd.projection2D || selected<1 || selected>3)
+		selected=0;
+#if !defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	if (selected==2) selected=0;
+#endif
+	g_SPXBCoopLight[0]=selected;
+	if (!selected) return false;
+	if (!(loggedModes&(1u<<selected))) {
+		loggedModes|=1u<<selected;
+		XBLog_WriteCriticalf("STEFX_COOP_LIGHT: mode=%d",selected);
+	}
+	++g_SPXBCoopLight[1];
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	const bool sample=g_SPXBPerfSampleActive!=0;
+	const unsigned __int64 start=sample ? STEFX_XboxReadTsc() : 0;
+#endif
+	bool failed=false;
+	if (selected==3) STEFX_CoopOriginalLight(ent);
+	else if (selected==1) {
+		if (!STEFX_CoopCombinedLight(ent)) {
+			++g_SPXBCoopLight[7]; failed=true;
+			STEFX_CoopOriginalLight(ent);
+		} else {
+			g_SPXBCoopLight[12]+=2; g_SPXBCoopLight[13]+=4;
+		}
+	}
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	else {
+		const D3DLIGHT8 before=glw_state->dirLight[0];
+		STEFX_CoopOriginalLight(ent);
+		const D3DLIGHT8 originalCpu=glw_state->dirLight[0];
+		D3DLIGHT8 originalDevice,combinedDevice;
+		BOOL original0=FALSE,original1=TRUE,combined0=FALSE,combined1=TRUE;
+		bool ok=SUCCEEDED(glw_state->device->GetLight(0,&originalDevice));
+		ok=SUCCEEDED(glw_state->device->GetLightEnable(0,&original0)) && ok;
+		ok=SUCCEEDED(glw_state->device->GetLightEnable(1,&original1)) && ok;
+		if (ok) {
+			glw_state->dirLight[0]=before;
+			ok=STEFX_CoopCombinedLight(ent);
+			ok=SUCCEEDED(glw_state->device->GetLight(0,&combinedDevice)) && ok;
+			ok=SUCCEEDED(glw_state->device->GetLightEnable(0,&combined0)) && ok;
+			ok=SUCCEEDED(glw_state->device->GetLightEnable(1,&combined1)) && ok;
+			if (ok) {
+				++g_SPXBCoopLight[5];
+				if (memcmp(&originalCpu,&glw_state->dirLight[0],sizeof(originalCpu)) ||
+					memcmp(&originalDevice,&combinedDevice,sizeof(originalDevice)) ||
+					original0!=combined0 || original1!=combined1) {
+					++g_SPXBCoopLight[6]; failed=true;
+				}
+			}
+			// A diagnostic always renders the original state, even on mismatch.
+			glw_state->dirLight[0]=originalCpu;
+			ok=SUCCEEDED(glw_state->device->SetLight(0,&originalDevice)) && ok;
+			ok=SUCCEEDED(glw_state->device->LightEnable(0,original0)) && ok;
+			ok=SUCCEEDED(glw_state->device->LightEnable(1,original1)) && ok;
+			++g_SPXBCoopLight[4];
+		}
+		if (!ok) { ++g_SPXBCoopLight[7]; failed=true; STEFX_CoopOriginalLight(ent); }
+	}
+	if (sample) {
+		const unsigned int cycles=STEFX_XboxElapsedCycles(start);
+		g_SPXBCoopLight[9]+=cycles; ++g_SPXBCoopLight[10];
+		if (cycles>g_SPXBCoopLight[11]) g_SPXBCoopLight[11]=cycles;
+	}
+#endif
+	if (failed) {
+		s_coopLightFailed=true; g_SPXBCoopLight[8]=1;
+		XBLog_WriteCriticalf("STEFX_COOP_LIGHT: disabled mismatches=%u apiFailures=%u",g_SPXBCoopLight[6],g_SPXBCoopLight[7]);
+	}
+	return true;
+}
+// STEFX_COOP_DIFFUSE_LIGHT_END
+#endif
+
 static void dllLighti(GLenum light, GLenum pname, GLint param)
 {
 	assert(0);
@@ -5890,6 +6774,39 @@ static void dllCopyBackBufferToTexEXT(float width, float height, float u1, float
 	glwstate_t::TextureInfo* info = _getCurrentTexture(glw_state->serverTU);
 	if (info == NULL) return;
 
+	// Rewriting a resource header does not enlarge its backing allocation.
+	// Validate capacity before changing device state or submitting GPU writes.
+	D3DSURFACE_DESC desc;
+	info->mipmap->GetLevelDesc(0, &desc);
+	IDirect3DTexture8 captureHeader;
+	const DWORD captureBytes = XGSetTextureHeader((UINT)width, (UINT)height,
+		1, 0, desc.Format, 0, &captureHeader, 0, 0);
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+	g_SPXBStasisD3D[42] = ((unsigned int)width << 16) | (unsigned int)height;
+	g_SPXBStasisD3D[43] = info->size;
+	g_SPXBStasisD3D[44] = captureBytes;
+	g_SPXBStasisD3D[45] = (desc.Width << 16) | desc.Height;
+	++g_SPXBStasisD3D[47];
+#endif
+	if (!captureBytes || captureBytes > info->size)
+	{
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+		++g_SPXBStasisD3D[46];
+#endif
+		XBLog_WriteCriticalf("STEFX_CAPTURE_CAPACITY: rejected tex=%u capture=%ux%u required=%u capacity=%u",
+			glw_state->currentTexture[glw_state->serverTU], (UINT)width, (UINT)height,
+			captureBytes, info->size);
+		return;
+	}
+	static bool s_loggedCaptureCapacity = false;
+	if (!s_loggedCaptureCapacity)
+	{
+		XBLog_WriteCriticalf("STEFX_CAPTURE_CAPACITY: ready tex=%u capture=%ux%u required=%u capacity=%u",
+			glw_state->currentTexture[glw_state->serverTU], (UINT)width, (UINT)height,
+			captureBytes, info->size);
+		s_loggedCaptureCapacity = true;
+	}
+
 	struct QUAD { D3DXVECTOR4 p; FLOAT tu,tv;} q[4];
 	q[0].p	= D3DXVECTOR4( 0.0f, 0.0f, 1.0f, 1.0f );
 	q[0].tu = u1;		q[0].tv = v1;
@@ -5904,7 +6821,6 @@ static void dllCopyBackBufferToTexEXT(float width, float height, float u1, float
 	LPDIRECT3DSURFACE8	pSurface;
 	LPDIRECT3DSURFACE8	pBackBuffer;
 	LPDIRECT3DSURFACE8	pStencilBuffer;
-	D3DSURFACE_DESC		desc;
 	D3DTexture*			pRenderTex;
 	int					w	= 0;
 	int					h	= 0;
@@ -6494,6 +7410,36 @@ static void dllTexImage1D(GLenum target, GLint level, GLint internalformat, GLsi
 	assert(0);
 }
 
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+// Bounded diagnostic for the two reported stasis materials; absent in production.
+extern "C" __declspec(dllexport) volatile unsigned int g_SPXBStasisUpload[432] = {0};
+static int s_stefxStasisUploadSlot = -1;
+void JkaFakeglSetTextureDebugName(const char *name)
+{
+	char material[MAX_QPATH];
+	s_stefxStasisUploadSlot = -1;
+	if (!name) return;
+	Q_strncpyz(material, name, sizeof(material));
+	COM_StripExtension(material, material);
+	if (!Q_stricmp(material, "textures/stasis/scum_256"))
+		s_stefxStasisUploadSlot = 0;
+	else if (!Q_stricmp(material, "textures/stasis/m_stasiswall_b"))
+		s_stefxStasisUploadSlot = 1;
+	else if (!strncmp(material, "*maps/stasis1/lightmap", 22))
+	{
+		int index = atoi(material + 22);
+		if (index >= 0 && index < 25) s_stefxStasisUploadSlot = index + 2;
+	}
+}
+static unsigned int STEFX_TextureByteHash(const void *data, unsigned int bytes)
+{
+	const unsigned char *p = (const unsigned char *)data;
+	unsigned int hash = 2166136261u;
+	while (bytes--) { hash ^= *p++; hash *= 16777619u; }
+	return hash;
+}
+#endif
+
 static void _texImageDDS(glwstate_t::TextureInfo* info, GLint numlevels, GLsizei width, GLsizei height, GLenum format, const GLvoid *pixels)
 {
 	D3DFORMAT f = D3DFMT_UNKNOWN;
@@ -6554,6 +7500,22 @@ static void _texImageDDS(glwstate_t::TextureInfo* info, GLint numlevels, GLsizei
 	}
 	info->mipmap->Register( info->data );
 	info->inMemory = true;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
+	if (s_stefxStasisUploadSlot >= 0)
+	{
+		volatile unsigned int *row = g_SPXBStasisUpload + s_stefxStasisUploadSlot * 16;
+		++row[0]; row[1] = width; row[2] = height; row[3] = numlevels;
+		row[4] = fileSize; row[5] = info->size; row[6] = format;
+		row[7] = glw_state->currentTexture[glw_state->serverTU];
+		row[8] = (unsigned int)info->data;
+		row[9] = STEFX_TextureByteHash(pixels, fileSize);
+		row[10] = STEFX_TextureByteHash(info->data, info->size);
+		row[11] = ((const unsigned int *)info->mipmap)[3];
+		row[12] = ((const unsigned int *)info->mipmap)[4];
+		XBLog_WriteCriticalf("STEFX_STASIS_UPLOAD: slot=%d tex=%u file=%u gpu=%u sourceHash=%08x gpuHash=%08x",
+			s_stefxStasisUploadSlot, row[7], row[4], row[5], row[9], row[10]);
+	}
+#endif
 }
 
 static void _texImageRGBA(glwstate_t::TextureInfo* info, GLint numlevels, GLint internalformat, GLsizei width, GLsizei height, GLenum format, const GLvoid *pixels)
@@ -6884,6 +7846,47 @@ static void dllTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yo
 	glwstate_t::TextureInfo* info = _getCurrentTexture(glw_state->serverTU);
 	if (info == NULL) return;
 
+#if defined(STEFX_ELITE_FORCE_SP)
+	// Full RGBA movie frames already match the destination pixel format.
+	// D3DX creates temporary surfaces even for this update; on a loaded map it
+	// can return E_OUTOFMEMORY, leaving the first movie frame on screen.
+	D3DSURFACE_DESC desc;
+	if (pixels && info->mipmap && info->data && level == 0 &&
+		format == GL_RGBA && type == GL_UNSIGNED_BYTE && xoffset == 0 && yoffset == 0 &&
+		width > 0 && height > 0 && width <= 4096 && height <= 4096 &&
+		(width & (width - 1)) == 0 && (height & (height - 1)) == 0 &&
+		SUCCEEDED(info->mipmap->GetLevelDesc(0, &desc)) &&
+		desc.Format == D3DFMT_A8R8G8B8 && desc.Width == (UINT)width && desc.Height == (UINT)height &&
+		(unsigned int)width * (unsigned int)height * 4 <= info->size)
+	{
+		info->mipmap->BlockUntilNotBusy();
+		D3DLOCKED_RECT locked;
+		// TILED exposes the existing swizzled backing store, avoiding an
+		// allocation for an unswizzled lock. Unlock preserves SDK coherency.
+		HRESULT lockResult = info->mipmap->LockRect(0, &locked, NULL, D3DLOCK_TILED);
+		if (FAILED(lockResult))
+		{
+			XBLog_WriteCriticalf("STEFX_MOVIE_TEXTURE: lock failed hr=%08x", (unsigned int)lockResult);
+			return;
+		}
+		XGSwizzleRect(pixels, 0, NULL, locked.pBits, width, height, NULL, 4);
+		info->mipmap->UnlockRect(0);
+		static unsigned int updates = 0;
+		++updates;
+		if (updates <= 4 || updates % 120 == 0)
+		{
+			const unsigned int *source = (const unsigned int *)pixels;
+			const unsigned int words = width * height;
+			const unsigned int stride = words >= 1024 ? words / 1024 : 1;
+			unsigned int hash = 2166136261u;
+			for (unsigned int i = 0; i < words; i += stride) hash = (hash ^ source[i]) * 16777619u;
+			XBLog_WriteCriticalf("STEFX_MOVIE_TEXTURE: update=%u size=%dx%d sourceHash=%08x temporaryBytes=0",
+				updates, width, height, hash);
+		}
+		return;
+	}
+#endif
+
 	RECT sr;
 	sr.top = 0;
 	sr.left = 0;
@@ -6918,8 +7921,15 @@ static void dllTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yo
 			return;
 	}
 
-	D3DXLoadSurfaceFromMemory(surf, NULL, &dr, pixels, 
+	HRESULT uploadResult = D3DXLoadSurfaceFromMemory(surf, NULL, &dr, pixels,
 		srcFormat, width * 4, NULL, &sr, D3DX_DEFAULT, 0);
+	if (FAILED(uploadResult))
+	{
+		static unsigned int failures = 0;
+		if (++failures <= 4)
+			XBLog_WriteCriticalf("STEFX_TEXTURE_UPDATE: failed hr=%08x size=%dx%d offset=%d,%d format=%x",
+				(unsigned int)uploadResult, width, height, xoffset, yoffset, format);
+	}
 
 	surf->Release();
 
@@ -7960,12 +8970,6 @@ void GLW_Init(int width, int height, int colorbits, qboolean cdsFullscreen)
 		glw_state->isWidescreen = true;
 		width = 640;
 
-		if( XGetVideoFlags() & XC_VIDEO_FLAGS_HDTV_480p )
-		{
-			width = 640;
-			height = 480;
-			mode = VM_480p;
-		}
 
 		/*if( XGetVideoFlags() & XC_VIDEO_FLAGS_HDTV_720p )
 		{
@@ -7980,6 +8984,14 @@ void GLW_Init(int width, int height, int colorbits, qboolean cdsFullscreen)
 			height = 1080;
 			mode = VM_1080i;
 		}*/
+	}
+
+	// 480p capability is independent of the dashboard's aspect-ratio setting.
+	if( XGetVideoFlags() & XC_VIDEO_FLAGS_HDTV_480p )
+	{
+		width = 640;
+		height = 480;
+		mode = VM_480p;
 	}
 
 	_createWindow(width, height, colorbits, cdsFullscreen);
@@ -8042,10 +9054,6 @@ D3DPRESENT_PARAMETERS present;
 	if( glw_state->isWidescreen )
 	{
 		present.Flags = D3DPRESENTFLAG_WIDESCREEN;
-		if(mode == VM_480p)
-		{
-			present.Flags |= D3DPRESENTFLAG_PROGRESSIVE;
-		}
 		//else if(mode == VM_720p)
 		//{
 		//	present.Flags |= D3DPRESENTFLAG_PROGRESSIVE;
@@ -8058,6 +9066,12 @@ D3DPRESENT_PARAMETERS present;
 
         present.Flags |= D3DPRESENTFLAG_WIDESCREEN;
 	}
+
+	if(mode == VM_480p)
+	{
+		present.Flags |= D3DPRESENTFLAG_PROGRESSIVE;
+	}
+	s_xboxPresentationFlags = present.Flags;
 
 	present.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
 	present.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT;
@@ -8156,6 +9170,9 @@ D3DPRESENT_PARAMETERS present;
 
 void GLW_Shutdown(void)
 {
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+	STEFX_WorldVerticesReset();
+#endif
 #ifdef _XBOX
 #ifdef VV_LIGHTING
 //	delete glw_state->lightEffects;

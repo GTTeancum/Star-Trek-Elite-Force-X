@@ -295,17 +295,26 @@ extern bool dontPillarPush;
 
 void SV_ClearLastLevel(void)
 {
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before Menu_Reset()");
 	Menu_Reset();
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before Z_TagFree(TAG_G_ALLOC)");
 	Z_TagFree(TAG_G_ALLOC);
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before Z_TagFree(TAG_UI_ALLOC)");
 	Z_TagFree(TAG_UI_ALLOC);
 #if !defined(STEFX_SP_HOSTED_MP)
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before G_FreeRoffs()");
 	G_FreeRoffs();
 #endif
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before R_ModelFree()");
 	R_ModelFree();
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before Music_Free()");
 	Music_Free();
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before Sys_IORequestQueueClear()");
 	Sys_IORequestQueueClear();
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before AS_FreePartial()");
 	AS_FreePartial();
 #if !defined(STEFX_SP_HOSTED_MP)
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before G_ASPreCacheFree()");
 	G_ASPreCacheFree();
 #endif
 #if !defined(STEFX_ELITE_FORCE_SP)
@@ -313,17 +322,24 @@ void SV_ClearLastLevel(void)
 	G2_FreeRag();
 #endif
 #if !defined(STEFX_SP_HOSTED_MP)
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before ClearAllNavStructures()");
 	ClearAllNavStructures();
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before ClearModelsAlreadyDone()");
 	ClearModelsAlreadyDone();
 #endif
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before CL_FreeServerCommands()");
 	CL_FreeServerCommands();
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before CL_FreeReliableCommands()");
 	CL_FreeReliableCommands();
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before CM_Free()");
 	CM_Free();
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before ShaderEntryPtrs_Clear()");
 	ShaderEntryPtrs_Clear();
 #if !defined(STEFX_ELITE_FORCE_SP)
 	ClearTheBonePool();
 #endif
 #if !defined(STEFX_SP_HOSTED_MP)
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before BG_ClearVehicles()");
 	BG_ClearVehicles();
 
 	cinematicSkipScript[0] = 0;
@@ -331,10 +347,12 @@ void SV_ClearLastLevel(void)
 
 	if (svs.clients)
 	{
-		SV_FreeClient( svs.clients );
+		XBLog_WriteRingMarker("STEFX_VV_CLEAR: before SV_FreeClient( svs.clients )");
+	SV_FreeClient( svs.clients );
 	}
 
 #if !defined(STEFX_SP_HOSTED_MP)
+	XBLog_WriteRingMarker("STEFX_VV_CLEAR: before ClearHStringPool()");
 	ClearHStringPool();
 #endif
 
@@ -371,6 +389,12 @@ void SV_ClearLastLevel(void)
 qboolean CM_SameMap(char *server);
 qboolean CM_HasTerrain(void);
 void Cvar_Defrag(void);
+
+#ifdef _XBOX
+// Last map load, retained independently of log-ring rotation. Milliseconds:
+// start, preparation, collision, world, game init, settling, total, complete.
+__declspec(dllexport) unsigned int g_SPXBLoadTimes[8] = {0};
+#endif
 
 // EF-owned load-time screen pulses. The old JA/Xbox YUY2 overlay animation was
 // removed because EF loading chrome is drawn through the renderer path instead.
@@ -423,6 +447,10 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	char		server[64];
 #ifdef _XBOX
 	const qboolean hadInitializedServer = svs.initialized ? qtrue : qfalse;
+	const unsigned int loadStart = Sys_Milliseconds();
+	unsigned int loadPhaseStart = loadStart;
+	memset(g_SPXBLoadTimes, 0, sizeof(g_SPXBLoadTimes));
+	g_SPXBLoadTimes[0] = loadStart;
 #endif
 
 	Q_strncpyz( server, iServer, sizeof(server), qtrue );
@@ -433,8 +461,11 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 #if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
 	// Resolve the localized SP load title while the outgoing filesystem state
 	// is still fully available. Renderer/game teardown starts below.
+	XBLog_WriteRingMarker("STEFX_VV_RELOAD: before ui_mapname");
 	Cvar_Set( "ui_mapname", server );
+	XBLog_WriteRingMarker("STEFX_VV_RELOAD: before loading title");
 	SP_PrecacheEFLoadingTitle();
+	XBLog_WriteRingMarker("STEFX_VV_RELOAD: after loading title");
 #endif
 #endif
 	XBLF("JA: SV_SpawnServer entered map='%s' reload=%d dissolve=%d", server, eForceReload, bAllowScreenDissolve);
@@ -466,34 +497,34 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 #ifdef _XBOX
 	// Failsafe to ensure that we don't have rumbling during level load
 	extern void IN_KillRumbleScripts( void );
-	XBLog_Write("JA: SV_SpawnServer before IN_KillRumbleScripts");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before IN_KillRumbleScripts");
 	IN_KillRumbleScripts();
-	XBLog_Write("JA: SV_SpawnServer after IN_KillRumbleScripts");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after IN_KillRumbleScripts");
 #endif
 
-	XBLog_Write("JA: SV_SpawnServer before RE_RegisterMedia_LevelLoadBegin");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before RE_RegisterMedia_LevelLoadBegin");
 	RE_RegisterMedia_LevelLoadBegin( server, eForceReload, bAllowScreenDissolve );
-	XBLog_Write("JA: SV_SpawnServer after RE_RegisterMedia_LevelLoadBegin");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after RE_RegisterMedia_LevelLoadBegin");
 
 
-	XBLog_Write("JA: SV_SpawnServer before cl_paused/timescale reset");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before cl_paused/timescale reset");
 	Cvar_SetValue( "cl_paused", 0 );
 	Cvar_Set( "timescale", "1" );//jic we were skipping
-	XBLog_Write("JA: SV_SpawnServer after cl_paused/timescale reset");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after cl_paused/timescale reset");
 
 	// shut down the existing game if it is running
-	XBLog_Write("JA: SV_SpawnServer before SV_ShutdownGameProgs");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before SV_ShutdownGameProgs");
 	SV_ShutdownGameProgs(qtrue);
-	XBLog_Write("JA: SV_SpawnServer after SV_ShutdownGameProgs");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after SV_ShutdownGameProgs");
 
 	Com_Printf ("------ Server Initialization ------\n%s\n", com_version->string);
-	XBLog_Write("JA: SV_SpawnServer before Server print");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before Server print");
 	Com_Printf ("Server: %s\n",server);	
-	XBLog_Write("JA: SV_SpawnServer after Server print");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after Server print");
 #if !defined(_XBOX) || !defined(STEFX_ELITE_FORCE_SP) || defined(STEFX_SP_HOSTED_MP)
-	XBLog_Write("JA: SV_SpawnServer before ui_mapname set");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before ui_mapname set");
 	Cvar_Set( "ui_mapname", server );
-	XBLog_Write("JA: SV_SpawnServer after ui_mapname set");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after ui_mapname set");
 #endif
 
 #ifndef FINAL_BUILD
@@ -504,9 +535,9 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 #ifdef _XBOX
 	g_SPXBMapPhase = 11;
 	// disable vsync during load for speed
-	XBLog_Write("JA: SV_SpawnServer before glDisable GL_VSYNC");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before glDisable GL_VSYNC");
 	glDisable(GL_VSYNC);
-	XBLog_Write("JA: SV_SpawnServer after glDisable GL_VSYNC");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after glDisable GL_VSYNC");
 #endif
 
 	// Hope this is correct - InitGame gets called later, which does this,
@@ -514,15 +545,15 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	// mimic CG_DrawInformation:
 #if !defined(STEFX_SP_HOSTED_MP)
 	extern SavedGameJustLoaded_e g_eSavedGameJustLoaded;
-	XBLog_Write("JA: SV_SpawnServer before saved-game load flag set");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before saved-game load flag set");
 	g_eSavedGameJustLoaded = eSavedGameJustLoaded;
-	XBLog_Write("JA: SV_SpawnServer after saved-game load flag set");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after saved-game load flag set");
 #else
-	XBLog_Write("JA: SV_SpawnServer skipped SP saved-game UI state for Holomatch");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer skipped SP saved-game UI state for Holomatch");
 #endif
 
 	// don't let sound stutter and dump all stuff on the hunk
-	XBLog_Write("JA: SV_SpawnServer before CL_MapLoading");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before CL_MapLoading");
 #ifdef _XBOX
 	g_SPXBMapPhase = 111;
 #endif
@@ -531,16 +562,16 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	g_SPXBMapPhase = 112;
 	XBLog_WriteCritical("STEFX_HW_BOOT: SV_SpawnServer client map-loading handoff complete");
 #endif
-	XBLog_Write("JA: SV_SpawnServer after CL_MapLoading");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after CL_MapLoading");
 
-	XBLog_Write("JA: SV_SpawnServer before CM_SameMap");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before CM_SameMap");
 	if (!CM_SameMap(server))
 	{ //rww - only clear if not loading the same map
-		XBLog_Write("JA: SV_SpawnServer before CM_ClearMap");
+		XBLog_WriteRingMarker("JA: SV_SpawnServer before CM_ClearMap");
 		CM_ClearMap();
-		XBLog_Write("JA: SV_SpawnServer after CM_ClearMap");
+		XBLog_WriteRingMarker("JA: SV_SpawnServer after CM_ClearMap");
 	}
-	XBLog_Write("JA: SV_SpawnServer after CM_SameMap/clear");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after CM_SameMap/clear");
 #ifdef _XBOX
 	XBLog_WriteCritical("STEFX_HW_BOOT: SV_SpawnServer collision map clear complete");
 #endif
@@ -702,7 +733,7 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	UpdateLoadingAnimation();
 	g_SPXBMapPhase = 14;
 #if !defined(STEFX_ELITE_FORCE_SP)
-	XBLog_Write("JA: SV_SpawnServer: precache humanoid GLA before BSP load...");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer: precache humanoid GLA before BSP load...");
 	{
 		const qhandle_t normalHumanoid = RE_RegisterModel("models/players/_humanoid/_humanoid.gla");
 		char cinematicHumanoid[MAX_QPATH];
@@ -721,13 +752,18 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	UpdateLoadingAnimation();
 #endif
 	XBLF("EF: SV_SpawnServer before CM_LoadMap map='%s' checksum=%d", server, checksum);
+	g_SPXBLoadTimes[1] = Sys_Milliseconds() - loadStart;
+	loadPhaseStart = Sys_Milliseconds();
 	CM_LoadMap( va("maps/%s.bsp", server), qfalse, &checksum );
+	g_SPXBLoadTimes[2] = Sys_Milliseconds() - loadPhaseStart;
 	g_SPXBMapPhase = 16;
 	XBLF("EF: SV_SpawnServer after CM_LoadMap map='%s' checksum=%d", server, checksum);
 	UpdateLoadingAnimation();
 	g_SPXBMapPhase = 17;
 	XBLF("EF: SV_SpawnServer before RE_LoadWorldMap map='%s'", server);
+	loadPhaseStart = Sys_Milliseconds();
 	RE_LoadWorldMap(va("maps/%s.bsp", server));
+	g_SPXBLoadTimes[3] = Sys_Milliseconds() - loadPhaseStart;
 	g_SPXBMapPhase = 18;
 	XBLF("EF: SV_SpawnServer after RE_LoadWorldMap map='%s'", server);
 	UpdateLoadingAnimation();
@@ -757,8 +793,13 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	g_SPXBMapPhase = 19;
 #endif
 	XBLog_Write("JA: SV_InitGameProgs...");
+#ifdef _XBOX
+	loadPhaseStart = Sys_Milliseconds();
+#endif
 	SV_InitGameProgs();
 #ifdef _XBOX
+	g_SPXBLoadTimes[4] = Sys_Milliseconds() - loadPhaseStart;
+	loadPhaseStart = Sys_Milliseconds();
 	g_SPXBMapPhase = 20;
 #endif
 	XBLog_Write("JA: SV_InitGameProgs done");
@@ -768,7 +809,7 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	g_SPXBMapPhase = 21;
 	SV_InitXboxTrace( 0x53565350, 2100, 0 ); /* SVSP */
 	XBLog_WriteRingMarker("JA: SV_SpawnServer ring before settle loop log");
-	XBLog_Write("JA: SV_SpawnServer before settle RunFrame loop");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before settle RunFrame loop");
 	SV_InitXboxTrace( 0x53565350, 2101, 0 ); /* SVSP */
 	XBLog_WriteRingMarker("JA: SV_SpawnServer ring after settle loop log");
 #endif
@@ -798,21 +839,21 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	}
 #ifdef _XBOX
 	g_SPXBMapPhase = 22;
-	XBLog_Write("JA: SV_SpawnServer before ge->ConnectNavs");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before ge->ConnectNavs");
 #endif
 	ge->ConnectNavs(sv_mapname->string, sv_mapChecksum->integer);
 #ifdef _XBOX
-	XBLog_Write("JA: SV_SpawnServer after ge->ConnectNavs");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after ge->ConnectNavs");
 #endif
 
 	// create a baseline for more efficient communications
 #ifdef _XBOX
 	g_SPXBMapPhase = 23;
-	XBLog_Write("JA: SV_SpawnServer before SV_CreateBaseline");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before SV_CreateBaseline");
 #endif
 	SV_CreateBaseline ();
 #ifdef _XBOX
-	XBLog_Write("JA: SV_SpawnServer after SV_CreateBaseline");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after SV_CreateBaseline");
 #endif
 
 	for (i=0 ; i<STEFX_SERVER_CLIENT_SLOTS ; i++) {
@@ -876,7 +917,7 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	// run another frame to allow things to look at all connected clients
 #ifdef _XBOX
 	g_SPXBMapPhase = 24;
-	XBLog_Write("JA: SV_SpawnServer before post-client RunFrame");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before post-client RunFrame");
 #endif
 #if defined(STEFX_SP_HOSTED_MP)
 	STEFX_HolomatchHostRunFrame(sv.time);
@@ -886,7 +927,7 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	STEFX_HolomatchHostAfterGameFrame(sv.time);
 #endif
 #ifdef _XBOX
-	XBLog_Write("JA: SV_SpawnServer after post-client RunFrame");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after post-client RunFrame");
 #endif
 	sv.time += 100;
 #if !defined(STEFX_ELITE_FORCE_SP)
@@ -896,18 +937,18 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 
 	// save systeminfo and serverinfo strings
 #ifdef _XBOX
-	XBLog_Write("JA: SV_SpawnServer before CS_SYSTEMINFO");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before CS_SYSTEMINFO");
 #endif
 	SV_SetConfigstring( CS_SYSTEMINFO, Cvar_InfoString( CVAR_SYSTEMINFO ) );
 	cvar_modifiedFlags &= ~CVAR_SYSTEMINFO;
 
 #ifdef _XBOX
-	XBLog_Write("JA: SV_SpawnServer before CS_SERVERINFO");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer before CS_SERVERINFO");
 #endif
 	SV_SetConfigstring( CS_SERVERINFO, Cvar_InfoString( CVAR_SERVERINFO ) );
 	cvar_modifiedFlags &= ~CVAR_SERVERINFO;
 #ifdef _XBOX
-	XBLog_Write("JA: SV_SpawnServer after serverinfo configstrings");
+	XBLog_WriteRingMarker("JA: SV_SpawnServer after serverinfo configstrings");
 #endif
 
 	// any media configstring setting now should issue a warning
@@ -928,7 +969,13 @@ void SV_SpawnServer( char *iServer, ForceReload_e eForceReload, qboolean bAllowS
 	StopLoadingAnimation();
 #ifdef _XBOX
 	g_SPXBMapPhase = 25;
-	XBLog_Write("JA: SV_SpawnServer complete");
+	g_SPXBLoadTimes[5] = Sys_Milliseconds() - loadPhaseStart;
+	g_SPXBLoadTimes[6] = Sys_Milliseconds() - loadStart;
+	g_SPXBLoadTimes[7] = 1;
+	XBLog_WriteCriticalf("STEFX_LOAD_TIMES: map=%s prepare=%u collision=%u world=%u game=%u settle=%u total=%u",
+		server, g_SPXBLoadTimes[1], g_SPXBLoadTimes[2], g_SPXBLoadTimes[3],
+		g_SPXBLoadTimes[4], g_SPXBLoadTimes[5], g_SPXBLoadTimes[6]);
+	XBLog_WriteRingMarker("JA: SV_SpawnServer complete");
 #endif
 
 	Com_Printf ("-----------------------------------\n");
@@ -1033,29 +1080,50 @@ void SV_Shutdown( char *finalmsg ) {
 
 	//Com_Printf( "----- Server Shutdown -----\n" );
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before final message");
+#endif
 	if ( svs.clients && !com_errorEntered ) {
 		SV_FinalMessage( finalmsg );
 	}
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before remove commands");
+#endif
 	SV_RemoveOperatorCommands();
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before game shutdown");
+#endif
 	SV_ShutdownGameProgs(qfalse);
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before snapshot free");
+#endif
 	if (svs.snapshotEntities)
 	{
 		Z_Free(svs.snapshotEntities);
 		svs.snapshotEntities = NULL;
 	}
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before configstrings free");
+#endif
 	for ( i = 0 ; i < MAX_CONFIGSTRINGS ; i++ ) {
 		if ( sv.configstrings[i] ) {
 			Z_Free( sv.configstrings[i] );
 		}
 	}
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before clear server");
+#endif
 	// free current level
 	memset( &sv, 0, sizeof( sv ) );
 
 	// free server static data
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before client free");
+#endif
 	if ( svs.clients ) {
 		SV_FreeClient(svs.clients);
 		Z_Free( svs.clients );
@@ -1063,8 +1131,14 @@ void SV_Shutdown( char *finalmsg ) {
 	memset( &svs, 0, sizeof( svs ) );
 
 	// Ensure we free any memory used by the leaf cache.
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before leaf cache free");
+#endif
 	CM_CleanLeafCache();
 
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	XBLog_WriteRingMarker("STEFX_VV_SHUTDOWN: before running reset");
+#endif
 	Cvar_Set( "sv_running", "0" );
 
 	//Com_Printf( "---------------------------\n" );

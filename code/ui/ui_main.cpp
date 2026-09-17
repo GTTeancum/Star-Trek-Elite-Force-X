@@ -8038,6 +8038,10 @@ static qboolean UI_EFSave_QueueWrite(const char *name, const char *source)
 	XBLF("STEFX_SAVELOAD_MENU: save queued source='%s' name='%s' command='%s'",
 		source ? source : "", name, command);
 #endif
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && !defined(STEFX_SP_HOSTED_MP)
+	if (ui.Cvar_VariableValue("stefx_vv_save_fixture") != 0)
+		ui.Cvar_Set("stefx_vv_save_fixture_name", name);
+#endif
 	ui.Cmd_ExecuteText(EXEC_APPEND, command);
 	return qtrue;
 }

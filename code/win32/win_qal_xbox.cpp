@@ -25,8 +25,10 @@
 #include <d3d8.h>
 #include <xgmath.h>
 #include <dsound.h>
-//#include <dsstdfx.h>
-#include "snd_fx_img.h"
+//#include <dsstdfx.h>	// XDK 5849 layout: reverb=3, xtalk=4 -- NOT ours
+#include "snd_fx_img.h"	// reverb=0, xtalk=1: matches the embedded 5558 image
+#include "snd_dsp_image.h"
+#include "snd_voice_spatial.h"
 #include "xb_log.h"
 
 #include <cmath>
@@ -96,6 +98,10 @@ struct QALState
 		bool m_Loop;
 		
 		bool m_Is3d;
+		bool m_WantsSpatialVoice;
+		bool m_SpatialVoice;
+		FLOAT m_ReferenceDistance;
+		unsigned int m_SpatialLogBudget;
 		D3DXVECTOR3 m_Position;
 	};
 	typedef std::map<ALuint, SourceInfo*> source_t;
@@ -173,6 +179,8 @@ struct QALState
 };
 
 static QALState* s_pState = NULL;
+static void _updateSource(QALState::SourceInfo* source);
+static void _sourceSetRefDist(QALState::SourceInfo* info, FLOAT value);
 
 
 /***********************************************
@@ -201,29 +209,74 @@ ALCdevice* alcOpenDevice(ALCubyte *deviceName)
 		return NULL;
 	}
 
-	DirectSoundUseFullHRTF();
-
-	// download effects image to hardware
-	void* image;
-	int len = FS_ReadFile("sound/dsstdfx.bin", &image);
-	if (len > 0)
+	// 3D positional voices are HRTF-filtered on Xbox; 2D voices bypass it.
+	// Cutscene dialogue on the player-character entity is spatialised while
+	// other speakers are not, which is where the dull dialogue shows up.
+	// s_hrtf: 1 = full (default, as shipped), 0 = light (azimuth only).
 	{
-		LPDSEFFECTIMAGEDESC desc;
+		cvar_t *hrtfCvar = Cvar_Get("s_hrtf", "1", CVAR_ARCHIVE);
+		if (hrtfCvar && hrtfCvar->integer)
+		{
+			DirectSoundUseFullHRTF();
+		}
+		else
+		{
+			DirectSoundUseLightHRTF();
+		}
+		XBLog_WriteCriticalf("STEFX_AUDIO_HRTF: mode=%s",
+			(hrtfCvar && hrtfCvar->integer) ? "full" : "light");
+	}
+
+	// Initialize the standard effects graph for hardware 3D effects. Dialogue
+	// has its own spectral-neutral speaker routing; other effects retain HRTF.
+	// This is required initialization, not an archived user preference.
+	{
+		void* image = NULL;
+		int len = FS_ReadFile("sound/dsstdfx.bin", &image);
+		LPCVOID dspImage = image;
+		DWORD dspLen = (DWORD)len;
+		const char* dspSource = "file";
+
+		if (len <= 0 || !image)
+		{
+			dspImage = s_stefxDspEffectsImage;
+			dspLen = (DWORD)sizeof(s_stefxDspEffectsImage);
+			dspSource = "embedded";
+		}
+
+		LPDSEFFECTIMAGEDESC desc = NULL;
 		DSEFFECTIMAGELOC effect;
 		effect.dwI3DL2ReverbIndex = GraphI3DL2_I3DL2Reverb;
 		effect.dwCrosstalkIndex = GraphXTalk_XTalk;
-		s_pState->m_SoundObject->DownloadEffectsImage(image, len, &effect, &desc);
+		XBLog_WriteCriticalf("STEFX_AUDIO_DSP: download begin source=%s bytes=%u", dspSource, (unsigned int)dspLen);
+		HRESULT dspHr = s_pState->m_SoundObject->DownloadEffectsImage(
+			dspImage, dspLen, &effect, &desc);
 
-		Z_Free(image);
+		XBLog_WriteCriticalf("STEFX_AUDIO_DSP: download end hr=0x%08x", (unsigned int)dspHr);
+		if (len > 0 && image)
+			FS_FreeFile(image);
 
-		// setup default reverb
-		DSI3DL2LISTENER reverb = { DSI3DL2_ENVIRONMENT_PRESET_NOREVERB };
-		s_pState->m_SoundObject->SetI3DL2Listener(&reverb, DS3D_DEFERRED);
-		XBLog_Writef("STEFX: QAL downloaded effects image bytes=%d", len);
-	}
-	else
-	{
-		XBLog_Write("STEFX: QAL effects image sound/dsstdfx.bin missing; continuing dry audio");
+		if (SUCCEEDED(dspHr))
+		{
+			// No added reverb -- the graph simply has to exist and be programmed.
+			DSI3DL2LISTENER reverb = { DSI3DL2_ENVIRONMENT_PRESET_NOREVERB };
+			XBLog_WriteCriticalf("STEFX_AUDIO_DSP: listener begin");
+			HRESULT listenerHr = s_pState->m_SoundObject->SetI3DL2Listener(&reverb, DS3D_DEFERRED);
+			XBLog_WriteCriticalf("STEFX_AUDIO_DSP: listener end hr=0x%08x", (unsigned int)listenerHr);
+		}
+
+		XBLog_WriteCriticalf(
+			"STEFX_AUDIO_DSP: source=%s bytes=%u reverbIdx=%d xtalkIdx=%d hr=0x%08x",
+			dspSource, (unsigned int)dspLen,
+			(int)GraphI3DL2_I3DL2Reverb, (int)GraphXTalk_XTalk,
+			(unsigned int)dspHr);
+		if (FAILED(dspHr))
+		{
+			s_pState->m_SoundObject->Release();
+			delete s_pState;
+			s_pState = NULL;
+			return NULL;
+		}
 	}
 
 	return (ALCdevice*)s_pState->m_SoundObject;
@@ -513,6 +566,10 @@ static int _genSource(bool is3d)
 	sinfo->m_Loop = false;
 
 	sinfo->m_Is3d = is3d;
+	sinfo->m_WantsSpatialVoice = false;
+	sinfo->m_SpatialVoice = false;
+	sinfo->m_ReferenceDistance = 300.0f;
+	sinfo->m_SpatialLogBudget = 0;
 	sinfo->m_Position.x = 0.f;
 	sinfo->m_Position.y = 0.f;
 	sinfo->m_Position.z = 0.f;
@@ -520,6 +577,56 @@ static int _genSource(bool is3d)
 	s_pState->m_Sources[s_pState->m_NextSource] = sinfo;
 
 	return true;
+}
+
+// Classification comes from the sound channel, not a filename convention.
+void QAL_SetSourceVoice(ALuint source, bool isVoice)
+{
+    QALState::source_t::iterator it = s_pState->m_Sources.find(source);
+    if (it != s_pState->m_Sources.end()) it->second->m_WantsSpatialVoice = isVoice;
+}
+
+static bool _configureSpatialVoice(QALState::SourceInfo* source,
+    QALState::BufferInfo* buffer)
+{
+    const bool spatial = source->m_Is3d && source->m_WantsSpatialVoice &&
+        buffer->m_WAVFormat.pcm.nChannels == 1;
+    if (spatial == source->m_SpatialVoice) return true;
+
+    DSBUFFERDESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.dwSize = sizeof(desc);
+    desc.dwFlags = spatial ? 0 : (DSBCAPS_CTRL3D | DSBCAPS_MUTE3DATMAXDISTANCE);
+    desc.lpwfxFormat = &buffer->m_WAVFormat.pcm;
+    QALState::SourceInfo::voice_t replacements;
+    QALState::SourceInfo::voice_t::iterator v;
+    for (v = source->m_Voices.begin(); v != source->m_Voices.end(); ++v)
+    {
+        IDirectSoundBuffer* voice = NULL;
+        HRESULT hr = s_pState->m_SoundObject->CreateSoundBuffer(&desc, &voice, NULL);
+        if (FAILED(hr))
+        {
+            QALState::SourceInfo::voice_t::iterator cleanup;
+            for (cleanup = replacements.begin(); cleanup != replacements.end(); ++cleanup)
+                cleanup->second->Release();
+            s_pState->m_Error = AL_OUT_OF_MEMORY;
+            XBLog_WriteCriticalf("STEFX_VOICE_SPATIAL: create failed hr=0x%08x", (unsigned int)hr);
+            return false;
+        }
+        replacements[v->first] = voice;
+    }
+    for (v = source->m_Voices.begin(); v != source->m_Voices.end(); ++v)
+    {
+        v->second->Stop();
+        v->second->Release();
+    }
+    source->m_Voices.swap(replacements);
+    source->m_SpatialVoice = spatial;
+    source->m_GainDirty = true;
+    _sourceSetRefDist(source, source->m_ReferenceDistance);
+    XBLog_WriteCriticalf("STEFX_VOICE_SPATIAL: mode=%s listeners=%u name='%s'",
+        spatial ? "speaker-pan" : "hrtf", (unsigned int)source->m_Voices.size(), buffer->m_DebugName);
+    return true;
 }
 
 static void _attachBuffer(ALuint source, ALuint buffer)
@@ -530,6 +637,13 @@ static void _attachBuffer(ALuint source, ALuint buffer)
 	QALState::SourceInfo* sinfo = s_pState->m_Sources[source];
 	QALState::BufferInfo* binfo = s_pState->m_Buffers[buffer];
 	
+	if (!_configureSpatialVoice(sinfo, binfo))
+	{
+		sinfo->m_Buffer = 0;
+		return;
+	}
+	sinfo->m_SpatialLogBudget = sinfo->m_SpatialVoice ? 2 : 0;
+
 	// setup voices for all listeners
 	for (QALState::SourceInfo::voice_t::iterator v = sinfo->m_Voices.begin(); 
 	v != sinfo->m_Voices.end(); ++v)
@@ -596,6 +710,8 @@ void SetHeadroom( int source, float value)
 
 static void _sourceSetRefDist(QALState::SourceInfo* info, FLOAT value)
 {
+	info->m_ReferenceDistance = value;
+	if (info->m_SpatialVoice) return;
 	for (QALState::SourceInfo::voice_t::iterator v = info->m_Voices.begin(); 
 	v != info->m_Voices.end(); ++v)
 	{
@@ -758,6 +874,7 @@ ALvoid alSourcePlay( ALuint source )
 
 	if (!info->m_Buffer)
 	{
+		s_pState->m_Error = AL_INVALID_OPERATION;
 		static int s_qalPlayNoBufferLogCount = 0;
 		if (s_qalPlayNoBufferLogCount < 64)
 		{
@@ -785,6 +902,10 @@ ALvoid alSourcePlay( ALuint source )
 		}
 		return;
 	}
+
+	// Set initial position, speaker gains and volume before the first sample.
+	_updateSource(info);
+	s_pState->m_SoundObject->CommitDeferredSettings();
 
 	// start playing for all listeners
 	for (QALState::SourceInfo::voice_t::iterator v = info->m_Voices.begin(); 
@@ -1711,6 +1832,39 @@ static void _updateVoicePos(IDirectSoundBuffer* voice, D3DXVECTOR3* pos,
 	voice->SetPosition(lpos.x, lpos.y, lpos.z, DS3D_DEFERRED);
 }
 
+static LONG _speakerGainMillibels(FLOAT gain)
+{
+    if (gain <= 0.00001f) return DSBVOLUME_MIN;
+    FLOAT mb = 2000.0f * (FLOAT)log10(gain);
+    if (mb < DSBVOLUME_HW_MIN) return DSBVOLUME_MIN;
+    return (LONG)mb;
+}
+
+static void _updateSpatialVoice(QALState::SourceInfo* source,
+    IDirectSoundBuffer* voice, QALState::ListenerInfo* listener)
+{
+    D3DXVECTOR4 local;
+    D3DXVec3Transform(&local, &source->m_Position, &listener->m_LTM);
+    StefxVoiceGains gains = StefxSpatialVoiceGains(local.x, local.y, local.z,
+        source->m_ReferenceDistance, (unsigned int)source->m_Voices.size());
+    DSMIXBINVOLUMEPAIR pair[2];
+    pair[0].dwMixBin = DSMIXBIN_FRONT_LEFT;
+    pair[0].lVolume = _speakerGainMillibels(gains.left);
+    pair[1].dwMixBin = DSMIXBIN_FRONT_RIGHT;
+    pair[1].lVolume = _speakerGainMillibels(gains.right);
+    DSMIXBINS bins;
+    bins.dwMixBinCount = 2;
+    bins.lpMixBinVolumePairs = pair;
+    HRESULT hr = voice->SetMixBinVolumes(&bins);
+    if (source->m_SpatialLogBudget || FAILED(hr))
+    {
+        XBLog_WriteCriticalf("STEFX_VOICE_SPATIAL: pos=(%.2f,%.2f,%.2f) distance=%.2f ref=%.2f left=%.4f right=%.4f hr=0x%08x",
+            local.x, local.y, local.z, gains.distance, source->m_ReferenceDistance,
+            gains.left, gains.right, (unsigned int)hr);
+        if (source->m_SpatialLogBudget) --source->m_SpatialLogBudget;
+    }
+}
+
 static void _updateSource(QALState::SourceInfo* source)
 {
 	// loop through all the voices at this source
@@ -1731,10 +1885,10 @@ static void _updateSource(QALState::SourceInfo* source)
 
 			if (l != s_pState->m_Listeners.end())
 			{
-				_updateVoicePos(
-					v->second,
-					&source->m_Position, 
-					l->second);
+				if (source->m_SpatialVoice)
+					_updateSpatialVoice(source, v->second, l->second);
+				else
+					_updateVoicePos(v->second, &source->m_Position, l->second);
 			}
 		}
 	}

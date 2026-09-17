@@ -1,0 +1,57 @@
+{
+  "coop": {
+    "xbe_sha256": "b16e4703f33760aebb015c342285bb189a63fc2b6b64e1c32aabb43b019c7790",
+    "loaded_map": "borg1",
+    "final_client_state": 7,
+    "mode_verified": true,
+    "final_liveness_verified": true,
+    "engine_error_message": "",
+    "split_evidence": {
+      "p2_refdef_valid": 1,
+      "hm_draws": [
+        1187,
+        1538,
+        0,
+        0
+      ],
+      "hm_done": [
+        876,
+        876,
+        0,
+        0
+      ]
+    },
+    "physical_memory_total_available_bytes": [
+      67108864,
+      4096
+    ],
+    "iso_restored": true,
+    "seconds": 480,
+    "priority": "normal then above-normal after 330s"
+  },
+  "vv": {
+    "xbe_sha256": "b16e4703f33760aebb015c342285bb189a63fc2b6b64e1c32aabb43b019c7790",
+    "loaded_map": "tour/deck02",
+    "final_client_state": 7,
+    "mode_verified": true,
+    "final_liveness_verified": true,
+    "engine_error_message": "",
+    "split_evidence": {
+      "p2_refdef_valid": 0
+    },
+    "physical_memory_total_available_bytes": [
+      67108864,
+      2097152
+    ],
+    "iso_restored": true,
+    "seconds": 180,
+    "priority": "above-normal",
+    "save_proof": [
+      1,
+      2,
+      2,
+      0
+    ]
+  },
+  "scope": "Bounded XEMU stability only; no FPS comparison, full VV or retail qualification."
+}

@@ -1,0 +1,159 @@
+ M AGENTS.md
+ M GAME_TODO.md
+ M HOLOMATCH_QUALIFICATION.md
+ M SP-Mod-Source-Code-master/cgame/FX_Util.cpp
+ M SP-Mod-Source-Code-master/cgame/cg_camera.cpp
+ M SP-Mod-Source-Code-master/cgame/cg_draw.cpp
+ M SP-Mod-Source-Code-master/cgame/cg_main.cpp
+ M SP-Mod-Source-Code-master/cgame/cg_marks.cpp
+ M SP-Mod-Source-Code-master/cgame/cg_players.cpp
+ M SP-Mod-Source-Code-master/cgame/cg_predict.cpp
+ M SP-Mod-Source-Code-master/cgame/cg_view.cpp
+ M SP-Mod-Source-Code-master/cgame/fx_primitive.cpp
+ M SP-Mod-Source-Code-master/game/Q3_Interface.cpp
+ M SP-Mod-Source-Code-master/game/g_ICARUS.cpp
+ M SP-Mod-Source-Code-master/game/g_boltons.cpp
+ M SP-Mod-Source-Code-master/game/g_main.cpp
+ M SP-Mod-Source-Code-master/icarus/Sequencer.cpp
+ M code/client/cl_cgame.cpp
+ M code/client/cl_cin_console.cpp
+ M code/client/cl_input.cpp
+ M code/client/cl_main.cpp
+ M code/client/cl_ui.cpp
+ M code/client/snd_ambient.cpp
+ M code/client/snd_dma_console.cpp
+ M code/client/snd_mem_console.cpp
+ M code/holomatch/official/game/g_bot.c
+ M code/holomatch/official/game/g_main.c
+ M code/holomatch/official/game/g_utils.c
+ M code/holomatch/stefx_mp_game_api.cpp
+ M code/qcommon/cm_load_xbox.cpp
+ M code/qcommon/cmd.cpp
+ M code/qcommon/common.cpp
+ M code/qcommon/cvar.cpp
+ M code/qcommon/ef_bsp_xbox_shared.h
+ M code/qcommon/files_common.cpp
+ M code/qcommon/files_console.cpp
+ M code/qcommon/fixedmap.h
+ M code/qcommon/qcommon.h
+ M code/qcommon/z_memman_console.cpp
+ M code/renderer/retail_xbox/tr_backend_retail.cpp
+ M code/renderer/retail_xbox/tr_cmds_retail.cpp
+ M code/renderer/retail_xbox/tr_main_retail.cpp
+ M code/renderer/retail_xbox/tr_scene_retail.cpp
+ M code/renderer/retail_xbox/tr_shade_calc_retail.cpp
+ M code/renderer/retail_xbox/tr_shade_retail.cpp
+ M code/renderer/retail_xbox/tr_surface_retail.cpp
+ M code/renderer/retail_xbox/tr_world_retail.cpp
+ M code/renderer/tr_animation.cpp
+ M code/renderer/tr_bsp_xbox.cpp
+ M code/renderer/tr_image.cpp
+ M code/renderer/tr_init.cpp
+ M code/renderer/tr_local.h
+ M code/renderer/tr_model.cpp
+ M code/renderer/tr_shader.cpp
+ M code/renderer/tr_surface.cpp
+ M code/server/sv_game.cpp
+ M code/server/sv_init.cpp
+ M code/server/sv_savegame.cpp
+ M code/ui/ui_ef_frontend.cpp
+ M code/ui/ui_ef_pause.cpp
+ M code/ui/ui_ef_qmenu.cpp
+ M code/ui/ui_local.h
+ M code/ui/ui_main.cpp
+ M code/ui/ui_splash.cpp
+ M code/win32/win_file_xbox.cpp
+ M code/win32/win_main_console.cpp
+ M code/win32/win_qal_xbox.cpp
+ M code/win32/win_qgl_dx8.cpp
+ M code/win32/xb_log.cpp
+ M code/win32/xbox_texture_man.h
+ M scripts/analyze_hardware_profile.py
+ M scripts/build_xbox.ps1
+ M scripts/build_xbox_patch_pk3.py
+ M scripts/ja_xemu_smoke.py
+ M scripts/package_beta.ps1
+?? SP-Mod-Source-Code-master/cgame/stefx_fx_trace_bounds.h
+?? SP-Mod-Source-Code-master/cgame/stefx_player_profile.h
+?? SP-Mod-Source-Code-master/cgame/stefx_shadow_cache.h
+?? code/client/stefx_input_replay.h
+?? code/renderer/mdr_block_codec.h
+?? code/renderer/retail_xbox/pvs_probe_bounds.h
+?? code/renderer/retail_xbox/stefx_coop_model_pvs.h
+?? code/renderer/retail_xbox/stefx_fx_bounds.h
+?? code/renderer/stefx_coop_mdr_skin.h
+?? code/ui/ui_ef_astrometrics.inl
+?? code/win32/snd_dsp_image.h
+?? code/win32/snd_voice_spatial.h
+?? code/win32/stefx_coop_model_arrays.h
+?? code/win32/stefx_coop_model_resident.h
+?? code/win32/stefx_coop_model_strips.h
+?? notes/campaign_checks_2026-09-09.md
+?? notes/coop_accepted_as_is_2026-09-11.md
+?? notes/coop_optimization_2026-09-11.md
+?? notes/evidence/
+?? notes/game_todo_history_2026-09-09.md
+?? notes/handoff_2026-09-12/
+?? notes/letterbox_optimization_2026-09-09.md
+?? notes/mp_dip_diagnosis_2026-09-10.md
+?? notes/mp_low_windows_2026-09-11.md
+?? notes/mp_optimization_2026-09-10.md
+?? notes/mp_resident_triangles_2026-09-11.md
+?? notes/renderer_review_2026-09-11.md
+?? notes/sp_optimization_2026-09-10.md
+?? notes/todo_cleanup_2026-09-11.md
+?? notes/virtual_voyager_2026-09-11.md
+?? notes/virtual_voyager_followup_2026-09-12.md
+?? notes/virtual_voyager_manual_feedback_2026-09-12.md
+?? notes/virtual_voyager_map_checks.md
+?? notes/virtual_voyager_memory_480p_2026-09-12.md
+?? notes/virtual_voyager_pipeline_2026-09-12.md
+?? notes/virtual_voyager_release_gate.md
+?? notes/virtual_voyager_testing_2026-09-12.md
+?? notes/vo_3d_diagnosis_2026-09-09.md
+?? scripts/analyze_coop_combat.py
+?? scripts/analyze_coop_model_arrays.py
+?? scripts/analyze_coop_model_pvs.py
+?? scripts/analyze_coop_npcs.py
+?? scripts/analyze_draw_kinds.py
+?? scripts/analyze_model_draws.py
+?? scripts/analyze_native_frame_progress.py
+?? scripts/analyze_native_lows.py
+?? scripts/analyze_native_video.py
+?? scripts/analyze_sp_host_progress.py
+?? scripts/analyze_stream_gameplay.py
+?? scripts/analyze_vo_capture.py
+?? scripts/analyze_xemu_flight.py
+?? scripts/audit_campaign_ambient_refs.py
+?? scripts/audit_md3_bounds.py
+?? scripts/audit_mdr_bounds.py
+?? scripts/audit_mdr_unused_lods.py
+?? scripts/audit_virtual_voyager_package.py
+?? scripts/build_virtual_voyager_test_iso.py
+?? scripts/build_voyager_detail_candidate.py
+?? scripts/capture_xemu_apu_stream.py
+?? scripts/capture_xemu_log_ring.py
+?? scripts/capture_xemu_vo.py
+?? scripts/check_virtual_voyager_turbolift.py
+?? scripts/compare_sp_perf_probes.py
+?? scripts/extract_fps_profile_stream.py
+?? scripts/extract_virtual_voyager_sources.py
+?? scripts/inventory_virtual_voyager_pipeline.py
+?? scripts/record_campaign_probe.py
+?? scripts/record_host_cpu_context.py
+?? scripts/record_host_gpu_context.ps1
+?? scripts/record_live_coop_players.py
+?? scripts/record_live_coop_scene.py
+?? scripts/recover_perf_views.py
+?? scripts/run_archived_vo_audio_proof.py
+?? scripts/run_sp_perf_probe.py
+?? scripts/run_virtual_voyager_load_checks.py
+?? scripts/run_vo_audio_proof.py
+?? scripts/tests/
+?? scripts/verify_beta_iso_components.py
+?? scripts/verify_vo_audio_proof.py
+?? scripts/xemu_coop_npcs.py
+?? scripts/xemu_coop_state.py
+?? scripts/xemu_flight_recorder.py
+?? scripts/xemu_host_process_stats.py
+?? scripts/xemu_native_video_stats.py

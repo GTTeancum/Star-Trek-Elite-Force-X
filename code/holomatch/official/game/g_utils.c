@@ -372,6 +372,17 @@ gentity_t *G_Spawn( void ) {
 		}
 	}
 	if ( i == ENTITYNUM_MAX_NORMAL ) {
+#if defined(STEFX_SP_HOSTED_MP)
+		int slot;
+		XBLog_WriteCriticalf("STEFX_HM_ENTITY_FULL: time=%d frame=%d restarted=%d slots=%d",
+			level.time, level.framenum, level.restarted, level.num_entities);
+		for (slot = MAX_CLIENTS; slot < MAX_CLIENTS + 8; ++slot) {
+			gentity_t *probe = &g_entities[slot];
+			XBLog_WriteCriticalf("STEFX_HM_ENTITY_SLOT: slot=%d class='%s' type=%d event=%d freeAfter=%d neverFree=%d eventTime=%d nextthink=%d",
+				slot, probe->classname ? probe->classname : "", probe->s.eType,
+				probe->s.event, probe->freeAfterEvent, probe->neverFree, probe->eventTime, probe->nextthink);
+		}
+#endif
 		G_Error( "G_Spawn: no free entities" );
 	}
 	

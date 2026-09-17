@@ -885,8 +885,9 @@ struct LumpStream
 	fileHandle_t file;
 	int len;
 	int pos;
+	int forwardSeeks;
 
-	LumpStream() : file(0), len(0), pos(0) {}
+	LumpStream() : file(0), len(0), pos(0), forwardSeeks(0) {}
 	~LumpStream() { close(); }
 
 	qboolean open(const char* map, const char* lump)
@@ -917,10 +918,14 @@ struct LumpStream
 		}
 		if (pos != offset)
 		{
-			if (FS_Seek(file, offset, FS_SEEK_SET) < 0)
+			// ZIP absolute seeks reopen and replay the entry. Forward gaps can
+			// advance from the current position without rereading earlier data.
+			if (FS_Seek(file, offset > pos ? offset - pos : offset,
+				offset > pos ? FS_SEEK_CUR : FS_SEEK_SET) < 0)
 			{
 				return qfalse;
 			}
+			if (offset > pos) ++forwardSeeks;
 			pos = offset;
 		}
 		while (total < bytes)
@@ -940,11 +945,14 @@ struct LumpStream
 	{
 		if (file)
 		{
+			if (forwardSeeks)
+				Com_Printf("STEFX_MAP_STREAM: relativeForwardSeeks=%d bytes=%d\n", forwardSeeks, len);
 			FS_FCloseFile(file);
 			file = 0;
 		}
 		len = 0;
 		pos = 0;
+		forwardSeeks = 0;
 	}
 };
 #endif _XBOX

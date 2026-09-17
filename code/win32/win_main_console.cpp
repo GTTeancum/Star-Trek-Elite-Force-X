@@ -501,15 +501,36 @@ static void Sys_XboxExecuteMenuMap(void)
 		Cvar_Set("stefx_hm_split_virtual_controls", virtualControls ? "1" : "0");
 		Cvar_Set("stefx_hm_split_virtual_controls_p1", virtualControlsP1 ? "1" : "0");
 	}
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	if (!Q_stricmp(mode, "virtualvoyager"))
+	{
+		// Match the original StartTour: discard only tour hub snapshots. Manual
+		// saves remain available through Load Game, including earlier tours.
+		extern void SG_WipeSavegame(const char *name);
+		static const char *tourDecks[] = {
+			"deck01", "deck02", "deck03", "deck04", "deck05",
+			"deck08", "deck09", "deck10", "deck11", "deck15"
+		};
+		int deck;
+		for (deck = 0; deck < 10; ++deck)
+		{
+			SG_WipeSavegame(va("hub/tour/%s", tourDecks[deck]));
+		}
+		XBLog_WriteCritical("STEFX_VIRTUAL_VOYAGER: new tour hub reset; manual saves retained");
+	}
+#endif
+	// Tour mode must be visible during game initialization and ICARUS startup.
+	Cvar_Get("cg_virtualVoyager", "0", CVAR_SAVEGAME);
+	Cvar_Set("cg_virtualVoyager", !Q_stricmp(mode, "virtualvoyager") ? "1" : "0");
 	Cbuf_ExecuteText(EXEC_NOW, va("map %s", mapName));
 
 	/* VM cvar registration during map setup restores these defaults.  Reapply the
 	   frontend-selected mode after the synchronous map command has returned. */
 	Cvar_Set("stefx_splitScreen", !Q_stricmp(mode, "holomatch") || players >= 2 ? "1" : "0");
 	Cvar_Set("stefx_splitScreenPlayers", va("%d", players));
-	Cvar_Set("stefx_splitScreenMode", mode);
+	Cvar_Set("stefx_splitScreenMode", !Q_stricmp(mode, "virtualvoyager") ? "sp" : mode);
 	Cvar_Set("stefx_splitScreenP2Entity", "-1");
-	Cvar_Set("cg_virtualVoyager", "0");
+	Cvar_Set("cg_virtualVoyager", !Q_stricmp(mode, "virtualvoyager") ? "1" : "0");
 	if (!Q_stricmp(mode, "holomatch"))
 	{
 		Cvar_Set("bot_enable", "1");
@@ -760,6 +781,9 @@ static bool Sys_XboxQueueDirectMapBoot(void)
 				}
 			}
 			fclose(postMapCommandFile);
+			// D: and d: are fallback spellings of the same Xbox file.
+			// Queue the diagnostic command file only once.
+			break;
 		}
 	}
 	if (treatAsDirectMap)

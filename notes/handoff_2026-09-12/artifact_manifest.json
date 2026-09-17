@@ -1,0 +1,194 @@
+[
+  {
+    "path": "build/research/ps2_re/SLUS_202.27",
+    "bytes": 3610888,
+    "sha256": "44bbcf612c8b90835c8510da8fc4bb7e7e222bc33d5950f93218f8622a4b10af",
+    "mtime": "2026-09-12T14:52:18.072282"
+  },
+  {
+    "path": "build/research/ps2_re/BORG1.PMP",
+    "bytes": 14650676,
+    "sha256": "8899d6c8976084794d80e33de22b03a30ad8a90cb2241cbe6329687a6e99a791",
+    "mtime": "2026-09-12T14:53:08.232238"
+  },
+  {
+    "path": "build/research/ps2_re/loader_decompilation.json",
+    "bytes": 16898,
+    "sha256": "edf39e4c95a8149da9da1efb6e6196517de40b219d6236f029e5d1fe47b3f3a1",
+    "mtime": "2026-09-12T15:26:36.017377"
+  },
+  {
+    "path": "build/research/ps2_re/ghidra_loader.log",
+    "bytes": 6301,
+    "sha256": "9baea818445e427a58c7bbb14f0b7739019c7084e469609c54f01658134cf352",
+    "mtime": "2026-09-12T15:33:40.990009"
+  },
+  {
+    "path": "build/research/ps2_re/scripts/ExtractLoader.py",
+    "bytes": 1573,
+    "sha256": "72bd484dae24fa774448bb32b71ee768345ae9876ca0ba0a2f22cca6afdb472f",
+    "mtime": "2026-09-12T15:31:14.614345"
+  },
+  {
+    "path": "build/research/ps2_re/scripts/run_ghidra_loader.py",
+    "bytes": 927,
+    "sha256": "da3a0b2b721f05cebea8d851b00e5de8844d583c7518e1ab30c68c08bf696133",
+    "mtime": "2026-09-12T15:28:55.650000"
+  },
+  {
+    "path": "build/release/default.xbe",
+    "bytes": 4812800,
+    "sha256": "0c11186de300d2538632089f36dfd79762549b79f1633b6c42a484581b75c116",
+    "mtime": "2026-09-12T15:19:08.420728"
+  },
+  {
+    "path": "build/release/efmp.xbe",
+    "bytes": 4628480,
+    "sha256": "309fc1013df0f08b95ab6014876285e2689d06fc1d98ee1e3327957cb51cc3a1",
+    "mtime": "2026-09-12T15:19:49.800380"
+  },
+  {
+    "path": "build/research/virtual_voyager/manual_profile.json",
+    "bytes": 1062,
+    "sha256": "45e913c7820520e9b20bad2fe1cfde3fa7ae3c8766f0b2d7d56c46104119efdd",
+    "mtime": "2026-09-12T13:01:03.090851"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/symbols/default.map",
+    "bytes": 2628718,
+    "sha256": "6a524dc12e521470a5a965990277e65cf6bdbb1f176c0527190c795990ea19f1",
+    "mtime": "2026-09-12T15:02:56.049745"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/symbols/default.exe",
+    "bytes": 5005312,
+    "sha256": "bcc5ac81cc3927c63ee2c7fbaf637d24bbadaec67d9847f79feaba80c176b9c4",
+    "mtime": "2026-09-12T15:02:53.706189"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/symbols/default.xbe",
+    "bytes": 4812800,
+    "sha256": "323b882d2ee97050e58c0acaea75e4227a8287d7133649ee0fd4164208df3710",
+    "mtime": "2026-09-12T15:02:57.427462"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/symbols/efmp.map",
+    "bytes": 2340352,
+    "sha256": "7b65858361c79f211dc464af819c70728ea88a2193e1c0c7cc72efc3075f5415",
+    "mtime": "2026-09-12T15:03:38.714400"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/symbols/efmp.exe",
+    "bytes": 4800512,
+    "sha256": "b0b8bc3c7714f14c1b5551eeb791cc191f046926d565498668bc5deaaaeb1345",
+    "mtime": "2026-09-12T15:03:35.374670"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/symbols/efmp.xbe",
+    "bytes": 4624384,
+    "sha256": "ccb50fc68c0b9f3c48753bb709235e44e3dffd32f00b84792d6f8d344de86077",
+    "mtime": "2026-09-12T15:03:40.513177"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/timed_symbols/default.map",
+    "bytes": 2628819,
+    "sha256": "1a4ccf7853049feb0dd4554025571aab8db115d6809a1955ce956fe0d66c9428",
+    "mtime": "2026-09-12T15:19:05.314336"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/timed_symbols/default.exe",
+    "bytes": 5005312,
+    "sha256": "44da2c5174226b45aaf9b52acb21d6ab75350ad18792954e94c00e6a89447bc7",
+    "mtime": "2026-09-12T15:18:46.780460"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/timed_symbols/default.xbe",
+    "bytes": 4812800,
+    "sha256": "0c11186de300d2538632089f36dfd79762549b79f1633b6c42a484581b75c116",
+    "mtime": "2026-09-12T15:19:08.420728"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/timed_symbols/efmp.map",
+    "bytes": 2340371,
+    "sha256": "0e04931156e545cbb67038f599d751ee4c74e5b2117e2eaa60036f8e0651d16b",
+    "mtime": "2026-09-12T15:19:48.215616"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/timed_symbols/efmp.exe",
+    "bytes": 4804608,
+    "sha256": "681a98080a9bef96f1db1bcfa257cc4d69b07fa7f50b8ea60d373786e944e413",
+    "mtime": "2026-09-12T15:19:46.132946"
+  },
+  {
+    "path": "build/research/virtual_voyager/terminal_fix/timed_symbols/efmp.xbe",
+    "bytes": 4628480,
+    "sha256": "309fc1013df0f08b95ab6014876285e2689d06fc1d98ee1e3327957cb51cc3a1",
+    "mtime": "2026-09-12T15:19:49.800380"
+  },
+  {
+    "path": "build/research/virtual_voyager/followup_symbols/default.map",
+    "bytes": 2625184,
+    "sha256": "cc19bf4cd7346a58a154e1e4610046ac17487e71f1c2c43eadcd136a24e31fdf",
+    "mtime": "2026-09-12T12:39:33.497427"
+  },
+  {
+    "path": "build/research/virtual_voyager/followup_symbols/default.exe",
+    "bytes": 5001216,
+    "sha256": "91a9180a4188f8287897a83173a708df508e4d55042e08708ac5a3cebb491ac8",
+    "mtime": "2026-09-12T12:39:31.220018"
+  },
+  {
+    "path": "build/research/virtual_voyager/followup_symbols/default.xbe",
+    "bytes": 4808704,
+    "sha256": "0b0b90e032cfd171988e2353cd19be011db734668839af703f14cd63cd261aad",
+    "mtime": "2026-09-12T12:39:34.873144"
+  },
+  {
+    "path": "build/research/virtual_voyager/followup_symbols/efmp.map",
+    "bytes": 2337116,
+    "sha256": "e21ae6889aa858fce8e4a7b326f08f93e457e346aad26c040c4872e999e5918c",
+    "mtime": "2026-09-12T12:42:32.600416"
+  },
+  {
+    "path": "build/research/virtual_voyager/followup_symbols/efmp.exe",
+    "bytes": 4796416,
+    "sha256": "36b53f5d50a1abdf9f31affe420494fed348afb514837c6998f112498d4aca68",
+    "mtime": "2026-09-12T12:42:30.723593"
+  },
+  {
+    "path": "build/research/virtual_voyager/followup_symbols/efmp.xbe",
+    "bytes": 4620288,
+    "sha256": "62b40e000980cbb34de94a78a97ce8072d6110bbdbc04820ce30a7e19f3b134b",
+    "mtime": "2026-09-12T12:42:34.157816"
+  },
+  {
+    "path": "Star Trek - Voyager - Elite Force (USA PS2).iso",
+    "exists": true,
+    "bytes": 1756102656,
+    "sha256": "Not rehashed at handoff; see existing build manifests where available"
+  },
+  {
+    "path": "build/research/virtual_voyager/StarTrekEliteForceX_virtual_voyager_followup.iso",
+    "exists": true,
+    "bytes": 2690658304,
+    "sha256": "Not rehashed at handoff; see existing build manifests where available"
+  },
+  {
+    "path": "build/research/virtual_voyager/StarTrekEliteForceX_virtual_voyager_terminal_wide.iso",
+    "exists": true,
+    "bytes": 3105325056,
+    "sha256": "Not rehashed at handoff; see existing build manifests where available"
+  },
+  {
+    "path": "build/research/virtual_voyager/StarTrekEliteForceX_virtual_voyager_pipeline.iso",
+    "exists": true,
+    "bytes": 3519995904,
+    "sha256": "Not rehashed at handoff; see existing build manifests where available"
+  },
+  {
+    "path": "build/release/BaseEF/xbox0.pk3",
+    "exists": true,
+    "bytes": 405228308,
+    "sha256": "Not rehashed at handoff; see existing build manifests where available"
+  }
+]

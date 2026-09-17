@@ -339,11 +339,14 @@ def analyze(path: Path) -> dict[str, object]:
     lines = text.splitlines()
     legacy_profiles = parse_records(lines, PROFILE_MARKER)
     fps_profiles_all = parse_records(lines, FPS_PROFILE_MARKER)
+    context_tagged = any("gameplay" in record for record in fps_profiles_all)
     fps_profiles = [
         record
         for record in fps_profiles_all
         if isinstance(record.get("sample"), (int, float))
         and int(record["sample"]) > 1
+        and (not context_tagged or
+             (record.get("gameplay") == 1 and record.get("excludedChecks") == 0))
     ]
     aligned_profiles = parse_records(lines, ALIGNED_PROFILE_MARKER)
     profiles = aligned_profiles or legacy_profiles
@@ -355,12 +358,13 @@ def analyze(path: Path) -> dict[str, object]:
     mdr_palette_cache = parse_records(lines, MDR_PALETTE_CACHE_MARKER)
     settled_profiles, settled_selection = settled_profile_records(profiles)
     profile_fps = numeric_series(fps_profiles, "fps")
-    fps_source = "dedicated-fps-ring" if profile_fps else "none"
-    if not profile_fps:
+    fps_source = ("gameplay-only-fps-ring" if context_tagged else
+                  "unclassified-fps-ring") if profile_fps else "none"
+    if not profile_fps and not context_tagged:
         profile_fps = numeric_series(settled_profiles, "fps")
         if profile_fps:
             fps_source = "profile"
-    if not profile_fps and aligned_profiles and legacy_profiles:
+    if not profile_fps and not context_tagged and aligned_profiles and legacy_profiles:
         # Production logs can retain detailed end-of-frame samples separately
         # from the periodic frame/FPS record. Match their monotonically
         # increasing sample IDs so the loading-only sample 0 is not folded
@@ -381,7 +385,7 @@ def analyze(path: Path) -> dict[str, object]:
         profile_fps = numeric_series(paired_fps_profiles, "fps")
         if profile_fps:
             fps_source = "sample-paired-profile"
-    heartbeat_fps = numeric_series(heartbeats, "fps")
+    heartbeat_fps = [] if context_tagged else numeric_series(heartbeats, "fps")
     fps = profile_fps or heartbeat_fps
     if not profile_fps and heartbeat_fps:
         fps_source = "heartbeat"

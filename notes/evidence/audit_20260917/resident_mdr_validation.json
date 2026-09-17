@@ -1,0 +1,34 @@
+{
+  "models/players/hazardfemale/lower.mdr": {
+    "frames": 3363,
+    "animation_bytes": 1022352,
+    "animation_sha256": "6cc6746dff8a3f93ad09a3edac3e894f05e09eec9a1eed156c8d0be3f5692417",
+    "resident_bytes": 773945,
+    "source_bytes": 1064712,
+    "saved_bytes": 290767
+  },
+  "models/players/hazardfemale/upper.mdr": {
+    "frames": 4101,
+    "animation_bytes": 2624640,
+    "animation_sha256": "1221f49ddced98f444152dbb2d5762c9ffca27f2094a190e973b6707593b0501",
+    "resident_bytes": 2224941,
+    "source_bytes": 2667260,
+    "saved_bytes": 442319
+  },
+  "models/players/crewthin/lower.mdr": {
+    "frames": 2177,
+    "animation_bytes": 766304,
+    "animation_sha256": "b7926f548295377296d48b4b2fde020ae1b39d9cd0079bca7c4a13f1af386eb4",
+    "resident_bytes": 557268,
+    "source_bytes": 803800,
+    "saved_bytes": 246532
+  },
+  "models/players/crewthin/upper.mdr": {
+    "frames": 2577,
+    "animation_bytes": 2205912,
+    "animation_sha256": "d131429908148b16c327c78ebe53eb90ef91a335f437e803b43d02b9c01dd1d3",
+    "resident_bytes": 1808848,
+    "source_bytes": 2274504,
+    "saved_bytes": 465656
+  }
+}

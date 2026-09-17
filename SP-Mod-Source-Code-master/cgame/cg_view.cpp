@@ -13,6 +13,13 @@ extern void RE_STEFX_SplitScreen_SetP2Refdef( const refdef_t *refdef, qboolean v
 extern void RE_STEFX_SplitScreen_SetP2PvsOrigin( const vec3_t origin );
 extern "C" volatile unsigned int g_SPXBPhaseLast;
 extern "C" volatile unsigned int g_SPXBClTailStage;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+extern "C" volatile unsigned int g_SPXBCoopCgamePhasesV2[51];
+extern void CG_STEFX_BeginPlayerProfile(void);
+extern void CG_STEFX_EndPlayerProfile(void);
+extern "C" volatile unsigned int g_SPXBMainLoopCount;
+#define STEFX_COOP_CGAME_DETAIL 1
+#endif
 extern "C" volatile unsigned int g_SPXBSplitP2Ent;
 extern "C" volatile unsigned int g_SPXBSplitP2TraceFrac1000;
 extern "C" volatile unsigned int g_SPXBSplitP2ViewX;
@@ -1485,6 +1492,10 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 	int xboxProfileTail = 0;
 	int xboxProfileDraw = 0;
 	int xboxProfileMark = xboxProfileStart;
+#if STEFX_COOP_CGAME_DETAIL
+	int xboxTailParts[6] = {0};
+	int xboxTailPartStart = 0;
+#endif
 	const int xboxDrawLog = (serverTime >= 3400 && serverTime <= 4600);
 	const qboolean stefxHardwareFirstFrame = ( cg.clientFrame == 0 );
 	if (xboxDrawLog)
@@ -1708,7 +1719,13 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 		}
 #endif
 		g_SPXBPhaseLast = 0x45464530; /* 'EFE0' */
+#if STEFX_COOP_CGAME_DETAIL
+		CG_STEFX_BeginPlayerProfile();
+#endif
 		CG_AddPacketEntities();			// adter calcViewValues, so predicted player state is correct
+#if STEFX_COOP_CGAME_DETAIL
+		CG_STEFX_EndPlayerProfile();
+#endif
 		g_SPXBClTailStage = 0x43473432; /* 'CG42' */
 		g_SPXBPhaseLast = 0x45464531; /* 'EFE1' */
 		CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame after CG_AddPacketEntities");
@@ -1731,6 +1748,9 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 #ifdef _XBOX
 	xboxProfileEntities = cgi_Milliseconds() - xboxProfileMark;
 	xboxProfileMark = cgi_Milliseconds();
+#if STEFX_COOP_CGAME_DETAIL
+	xboxTailPartStart = xboxProfileMark;
+#endif
 #endif
 
 	// Don't draw the in-view weapon when in camera mode
@@ -1777,6 +1797,10 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 	}
 
 	// finish up the rest of the refdef
+#if STEFX_COOP_CGAME_DETAIL
+	xboxTailParts[0] = cgi_Milliseconds() - xboxTailPartStart;
+	xboxTailPartStart = cgi_Milliseconds();
+#endif
 	if ( cg.testModelEntity.hModel ) {
 		CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame before CG_AddTestModel");
 		CG_AddTestModel();
@@ -1806,16 +1830,27 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 	CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame after refdef finalize");
 
 	// update audio positions
+#if STEFX_COOP_CGAME_DETAIL
+	xboxTailParts[1] = cgi_Milliseconds() - xboxTailPartStart;
+	xboxTailPartStart = cgi_Milliseconds();
+#endif
 	CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame before S_Respatialize");
 	cgi_S_Respatialize( cg.snap->ps.clientNum, cg.refdef.vieworg, cg.refdef.viewaxis, inwater );
 	CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame after S_Respatialize");
 
 	// warning sounds when powerup is wearing off
+#if STEFX_COOP_CGAME_DETAIL
+	xboxTailParts[2] = cgi_Milliseconds() - xboxTailPartStart;
+	xboxTailPartStart = cgi_Milliseconds();
+#endif
 	CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame before CG_PowerupTimerSounds");
 	CG_PowerupTimerSounds();
 	CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame after CG_PowerupTimerSounds");
 
 	// make sure the lagometerSample and frame timing isn't done twice when in stereo
+#if STEFX_COOP_CGAME_DETAIL
+	xboxTailParts[3] = cgi_Milliseconds() - xboxTailPartStart;
+#endif
 	CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame before frametime");
 	if ( stereoView != STEREO_RIGHT ) {
 		cg.frametime = cg.time - cg.oldTime;
@@ -1824,6 +1859,9 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 	CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame after frametime");
 
 	//Add all effects
+#if STEFX_COOP_CGAME_DETAIL
+	xboxTailPartStart = cgi_Milliseconds();
+#endif
 	if (cg.frametime >= 0) {
 		CG_XBOX_ACTIVE_LOG("JA: CL_EARLY EF CG_DrawActiveFrame before FX_Add");
 		g_SPXBPhaseLast = 0x45465430; /* 'EFT0' */
@@ -1834,6 +1872,12 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 	}
 #ifdef _XBOX
 	xboxProfileTail = cgi_Milliseconds() - xboxProfileMark;
+#if STEFX_COOP_CGAME_DETAIL
+	xboxTailParts[4] = cgi_Milliseconds() - xboxTailPartStart;
+	xboxTailParts[5] = xboxProfileTail;
+	for (int tailPart = 0; tailPart < 5; ++tailPart) xboxTailParts[5] -= xboxTailParts[tailPart];
+	if (xboxTailParts[5] < 0) xboxTailParts[5] = 0; // millisecond rounding
+#endif
 	xboxProfileMark = cgi_Milliseconds();
 #endif
 
@@ -1872,6 +1916,32 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 	}
 #ifdef _XBOX
 	xboxProfileDraw = cgi_Milliseconds() - xboxProfileMark;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	if (cg_stefxSplitScreen.integer && cg_stefxSplitScreenPlayers.integer >= 2) {
+		// Publish the existing phase timers together after both HUD passes.
+		// An external reader rejects odd/changing sequence values instead of
+		// combining timings or entity counts from different client frames.
+		++g_SPXBCoopCgamePhasesV2[0];
+		g_SPXBCoopCgamePhasesV2[1] = cg.clientFrame;
+		g_SPXBCoopCgamePhasesV2[2] = serverTime;
+		g_SPXBCoopCgamePhasesV2[3] = cgi_Milliseconds() - xboxProfileStart;
+		g_SPXBCoopCgamePhasesV2[4] = xboxProfileSetup;
+		g_SPXBCoopCgamePhasesV2[5] = xboxProfilePredict;
+		g_SPXBCoopCgamePhasesV2[6] = xboxProfileView;
+		g_SPXBCoopCgamePhasesV2[7] = xboxProfileEntities;
+		g_SPXBCoopCgamePhasesV2[8] = xboxProfileTail;
+		g_SPXBCoopCgamePhasesV2[9] = xboxProfileDraw;
+		g_SPXBCoopCgamePhasesV2[10] = g_stefxCgRenderSceneMsec;
+		g_SPXBCoopCgamePhasesV2[11] = g_stefxCgDraw2DMsec;
+		g_SPXBCoopCgamePhasesV2[12] = g_SPXBMainLoopCount;
+		for (int slot = 0; slot < 16; ++slot) {
+			g_SPXBCoopCgamePhasesV2[13+slot] = g_SPXBCgEntTypeCycles[slot];
+			g_SPXBCoopCgamePhasesV2[29+slot] = g_SPXBCgEntTypeCounts[slot];
+		}
+		for (int part = 0; part < 6; ++part) g_SPXBCoopCgamePhasesV2[45+part] = xboxTailParts[part];
+		++g_SPXBCoopCgamePhasesV2[0];
+	}
+#endif
 	if (serverTime - s_xboxLastProfileTime >= 10000)
 	{
 		XBLog_WriteCriticalf(

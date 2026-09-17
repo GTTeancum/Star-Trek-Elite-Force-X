@@ -495,7 +495,8 @@ qboolean R_LoadXboxOptimizedLightmaps( const char *psMapName ) {
 #endif
 
 	Q_strncpyz( mapNameCopy, psMapName, sizeof( mapNameCopy ) );
-	Q_strncpyz( baseName, COM_SkipPath( mapNameCopy ), sizeof( baseName ) );
+	// Preserve tour/deckXX when locating its optimized lightmaps.
+	Q_strncpyz( baseName, !Q_stricmpn(mapNameCopy, "maps/", 5) ? mapNameCopy + 5 : mapNameCopy, sizeof( baseName ) );
 	COM_StripExtension( baseName, baseName );
 	Com_sprintf( sidecarName, sizeof( sidecarName ), "maps/xbox/%s.lmpdds", baseName );
 
@@ -1809,7 +1810,8 @@ R_LoadTriSurfs
 */
 static void R_LoadTriSurfsInternal( void *indexdata, int indexlen,
 					void *verts, int vertlen, LumpStream *vertStream,
-					void *surfaces, int surfacelen ) {
+					void *surfaces, int surfacelen, LumpStream *indexStream = NULL,
+                    short *indexScratch = NULL ) {
 	dtrisurf_t	*in = NULL;
 	msurface_t	*out;
 	mapVert_t	*dv;
@@ -1870,7 +1872,23 @@ static void R_LoadTriSurfsInternal( void *indexdata, int indexlen,
 			parseSurface = &localSurface;
 			parseVerts = surfaceVerts;
 		}
-		ParseTriSurf( parseSurface, parseVerts, out, indexes );
+		short *parseIndexes = indexes;
+        if (indexStream)
+        {
+            const unsigned int packed = parseSurface->indexes;
+            const int count = packed & 0xFFF;
+            if (!indexScratch || !indexStream->readAt((packed >> 12) * sizeof(short),
+                    indexScratch, count * sizeof(short)))
+            {
+                Com_Error(ERR_DROP, "STEFX: packed index read failed at surface %d", i);
+                return;
+            }
+            localSurface = *parseSurface;
+            localSurface.indexes = count;
+            parseSurface = &localSurface;
+            parseIndexes = indexScratch;
+        }
+		ParseTriSurf(parseSurface, parseVerts, out, parseIndexes);
 	}
 	if (surfaceVerts)
 	{
@@ -1888,10 +1906,10 @@ void R_LoadTriSurfs( void *indexdata, int indexlen, void *verts, int vertlen,
 	R_LoadTriSurfsInternal(indexdata, indexlen, verts, vertlen, NULL, surfaces, surfacelen);
 }
 
-void R_LoadTriSurfsStream( void *indexdata, int indexlen, LumpStream *verts,
-					void *surfaces, int surfacelen ) {
-	R_LoadTriSurfsInternal(indexdata, indexlen, NULL, verts ? verts->len : 0,
-		verts, surfaces, surfacelen);
+void R_LoadTriSurfsStream( LumpStream *indexes, short *indexScratch, LumpStream *verts,
+                    void *surfaces, int surfacelen, void *residentIndexes, int residentIndexLen ) {
+    R_LoadTriSurfsInternal(residentIndexes, indexes ? indexes->len : residentIndexLen, NULL, verts ? verts->len : 0,
+        verts, surfaces, surfacelen, indexes, indexScratch);
 }
 
 
@@ -1902,7 +1920,8 @@ R_LoadFaces
 */
 static void R_LoadFacesInternal( void *indexdata, int indexlen,
 					void *verts, int vertlen, LumpStream *vertStream,
-					void *surfaces, int surfacelen, LumpStream *surfaceStream ) {
+					void *surfaces, int surfacelen, LumpStream *surfaceStream,
+                    LumpStream *indexStream = NULL, short *indexScratch = NULL ) {
 	dface_t		*in = NULL;
 	msurface_t	*out;
 	mapVert_t	*dv;
@@ -2104,7 +2123,23 @@ static void R_LoadFacesInternal( void *indexdata, int indexlen,
 			parseSurface = &localSurface;
 			parseVerts = surfaceVerts;
 		}
-		ParseFace(parseSurface, parseVerts, out, indexes, faceDataCursor, resolvedShader, faceDataEnd);
+		short *parseIndexes = indexes;
+        if (indexStream)
+        {
+            const unsigned int packed = parseSurface->indexes;
+            const int count = packed & 0xFFF;
+            if (!indexScratch || !indexStream->readAt((packed >> 12) * sizeof(short),
+                    indexScratch, count * sizeof(short)))
+            {
+                Com_Error(ERR_DROP, "STEFX: packed index read failed at surface %d", i);
+                return;
+            }
+            localSurface = *parseSurface;
+            localSurface.indexes = count;
+            parseSurface = &localSurface;
+            parseIndexes = indexScratch;
+        }
+		ParseFace(parseSurface, parseVerts, out, parseIndexes, faceDataCursor, resolvedShader, faceDataEnd);
 #ifdef _XBOX
 		g_SPXBPackedFaceIndex = i + 1;
 		g_SPXBPackedFaceBytes = (unsigned int)(faceDataCursor - faceData);
@@ -2137,10 +2172,10 @@ void R_LoadFaces( void *indexdata, int indexlen, void *verts, int vertlen,
 	R_LoadFacesInternal(indexdata, indexlen, verts, vertlen, NULL, surfaces, surfacelen, NULL);
 }
 
-void R_LoadFacesStream( void *indexdata, int indexlen, LumpStream *verts,
-					LumpStream *surfaces ) {
-	R_LoadFacesInternal(indexdata, indexlen, NULL, verts ? verts->len : 0,
-		verts, NULL, surfaces ? surfaces->len : 0, surfaces);
+void R_LoadFacesStream( LumpStream *indexes, short *indexScratch, LumpStream *verts,
+                    LumpStream *surfaces, void *residentIndexes, int residentIndexLen ) {
+    R_LoadFacesInternal(residentIndexes, indexes ? indexes->len : residentIndexLen, NULL, verts ? verts->len : 0,
+        verts, NULL, surfaces ? surfaces->len : 0, surfaces, indexes, indexScratch);
 }
 
 #if defined(STEFX_ELITE_FORCE_SP)
@@ -3295,6 +3330,10 @@ void RE_LoadWorldMap_Actual( const char *name, world_t &worldData, int index ) {
 extern qboolean gbUsingCachedMapDataRightNow;
 void RE_LoadWorldMap( const char *name )
 {
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+	R_SyncRenderThread();
+	STEFX_WorldVerticesReset();
+#endif
 	memset(entityVisList, -1, sizeof(entityVisList));
 
 	gbUsingCachedMapDataRightNow = qtrue;	// !!!!!!!!!!!!

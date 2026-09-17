@@ -40,11 +40,8 @@ public:
 	// No bookkeeping necessary, texNum is unused:
 	void *Allocate( unsigned long size, GLuint texNum )
 	{
-#ifndef FINAL_BUILD
-		assert( allocPoint + size <= poolSize );
-		if( allocPoint + size > poolSize )
+		if( size > poolSize || allocPoint > poolSize - size )
 			throw "Static texture pool full";
-#endif
 
 		// Current location:
 		void *retVal = base + allocPoint;
@@ -53,10 +50,8 @@ public:
 		allocPoint += size;
 		allocPoint = (allocPoint + 127) & ~127;
 
-#ifndef FINAL_BUILD
 		if( allocPoint > maxAlloc )
 			maxAlloc = allocPoint;
-#endif
 
 		return retVal;
 	}
@@ -164,6 +159,7 @@ public:
 			base = (unsigned char *) D3D_AllocContiguousMemory( size, 0 );
 		poolSize = size;
 		fileHandle = INVALID_HANDLE_VALUE;
+		peakAlloc = 0;
 		ResetMemory();
 #if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 		ResetCounters();
@@ -179,6 +175,8 @@ public:
 	// Allocate enough space for size - it's used for texture texNum:
 	void *Allocate( unsigned long size, GLuint texNum )
 	{
+		if( size > poolSize )
+			throw "Model texture exceeds pool capacity";
 		// Check for fullness - make room
 		if( allocPoint + size > poolSize )
 		{
@@ -192,6 +190,8 @@ public:
 		// Advance, then round up:
 		allocPoint += size;
 		allocPoint = (allocPoint + 127) & ~127;
+
+		if( allocPoint > peakAlloc ) peakAlloc = allocPoint;
 
 		// Make a note of this texture:
 		allocatedTextures[numTextures].data = (unsigned char *) retVal;
@@ -266,6 +266,8 @@ public:
 		fileOffset = 0;
 	}
 
+	unsigned long Peak( void ) const { return peakAlloc; }
+
 	// This forces all textures in memory to disk, so that the next frame or
 	// so will re-load whatever's needed. It's only useful in situations where
 	// you know that you're going to cache-miss on a bunch of textures, then
@@ -311,6 +313,7 @@ private:
 	unsigned long	poolSize;
 	unsigned long	allocPoint;
 	unsigned long	fileOffset;
+	unsigned long	peakAlloc;
 	HANDLE 			fileHandle;
 #if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	unsigned long	swapCount;

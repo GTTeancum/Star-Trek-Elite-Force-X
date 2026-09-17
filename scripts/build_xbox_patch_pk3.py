@@ -686,6 +686,12 @@ def texture_size_for_path(out_rel: str, args: argparse.Namespace) -> int:
         return max(args.max_texture_size, 256)
     if Path(out_rel).with_suffix("").as_posix() in HIGH_FIDELITY_TEXTURES:
         return max(args.max_texture_size, 256)
+    # Preserve authored detail on Voyager corridor surfaces seen close up.
+    # Keep the rest of the package on its existing memory policy.
+    if out_rel.startswith("textures/voyager/") and any(
+        word in Path(out_rel).stem for word in ("door", "floor", "wall")
+    ):
+        return max(args.max_texture_size, 256)
     if out_rel.startswith("models/players/") or out_rel.startswith("models/players2/"):
         return args.max_player_texture_size
     if out_rel.startswith("gfx/"):
@@ -1360,7 +1366,7 @@ def parse_bsp_lumps(data: bytes, bsp_path: Path) -> list[tuple[int, int]]:
 def campaign_bsp_paths(base_dir: Path) -> list[Path]:
     maps_dir = base_dir / "maps"
     paths: list[Path] = []
-    for path in sorted(maps_dir.glob("*.bsp")):
+    for path in sorted(maps_dir.rglob("*.bsp")):
         name = path.name.lower()
         if name.startswith(MULTIPLAYER_MAP_PREFIXES):
             continue
@@ -1386,7 +1392,7 @@ def selected_bsp_paths(base_dir: Path, mode: str, map_name: str) -> list[Path]:
     if mode == "multiplayer":
         return multiplayer_bsp_paths(base_dir)
     if mode == "all":
-        return sorted(maps_dir.glob("*.bsp"))
+        return sorted(maps_dir.rglob("*.bsp"))
     if mode == "map":
         path = maps_dir / f"{map_name}.bsp"
         if not path.exists():
@@ -1792,11 +1798,12 @@ def build_patch(args: argparse.Namespace) -> dict[str, object]:
             packed_lumps, packed_report = packed_bsp_lumps(
                 Path(__file__).resolve().parents[1], bsp_path
             )
-            map_name = bsp_path.stem.lower()
+            map_name = bsp_path.relative_to(base_dir / "maps").with_suffix("").as_posix().lower()
             bsp_out_rel = f"maps/xbox/{map_name}.bsp"
             lightmap_out_rel = f"maps/xbox/{map_name}.lmpdds"
             checksum = com_block_checksum(optimized_bsp)
             packed_lumps["checksum"] = struct.pack("<I", checksum)
+            report["map"] = map_name
             report["bspPath"] = None
             report["packedMapPath"] = f"maps/{map_name}/"
             report["lightmapPath"] = lightmap_out_rel

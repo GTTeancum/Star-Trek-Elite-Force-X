@@ -13,7 +13,7 @@ extern int CL_STEFX_SplitScreen_PadForLocalSlot(int localSlot);
 
 #define EF_FRONTEND_BUTTON_COUNT 6
 #define EF_FRONTEND_CONFIGURE_COUNT 3
-#define EF_FRONTEND_NEWGAME_COUNT 8
+#define EF_FRONTEND_NEWGAME_COUNT 9
 #define EF_FRONTEND_COOP_COUNT 2
 #define EF_FRONTEND_COOP_NEW_COUNT 8
 #define EF_FRONTEND_HOLOMATCH_COUNT 4
@@ -365,7 +365,7 @@ static int s_normalTextCount = 0;
 static char s_crewBioLines[EF_FRONTEND_CREW_BIO_LINES][256];
 
 static const char *s_configureItems[EF_FRONTEND_CONFIGURE_COUNT] = { "AUDIO", "VIDEO", "CONTROLLER" };
-static const char *s_newgameItems[EF_FRONTEND_NEWGAME_COUNT] = { "EASY", "NORMAL", "CHALLENGING", "DIFFICULT", "FEMALE", "MALE", "TUTORIAL", "ENGAGE" };
+static const char *s_newgameItems[EF_FRONTEND_NEWGAME_COUNT] = { "EASY", "NORMAL", "CHALLENGING", "DIFFICULT", "FEMALE", "MALE", "TUTORIAL", "CAMPAIGN", "VIRTUAL VOYAGER" };
 static const char *s_holomatchMapNames[EF_FRONTEND_HOLOMATCH_MAP_COUNT] = {
 	"hm_borg1", "hm_kln1", "hm_for1", "hm_noon", "hm_voy2", "hm_dn1", "hm_scav1",
 	"hm_voy1", "hm_borg2", "hm_dn2", "hm_cam", "hm_borg3", "hm_altar", "hm_blastradius",
@@ -1758,12 +1758,25 @@ static void EFFe_DrawNewGameLayout(qboolean cooperative)
 		cooperative ? (s_newgameGenderMale ? "P2 : ALEXANDRIA" : "P2 : MUNRO") : "TUTORIAL",
 		s_cursor == 6 ? s_ps2ButtonSelected : s_ps2ButtonPurple,
 		colorTable[CT_BLACK]);
+	if (!cooperative)
+	{
+		EFFe_DrawRoundButton(1197.0f, 1292.0f, 429.0f, 425.0f, 94.0f,
+			"CAMPAIGN", s_cursor == 7 ? s_ps2ButtonSelected : s_ps2ButtonPurple, colorTable[CT_BLACK]);
+	}
 	EFFe_DrawPs2PicColor(1115.0f, 552.0f, 606.0f, 66.0f, s_assets.buttonRight, s_ps2StripPurple);
 	EFFe_DrawPs2RectColor(1115.0f, 585.0f, 606.0f, 22.0f, s_ps2StripPurple);
 	EFFe_DrawPs2RectColor(1115.0f, 607.0f, 606.0f, 12.0f, colorTable[CT_BLACK]);
 	EFFe_DrawPs2RectColor(1292.0f, 618.0f, 429.0f, 205.0f,
-		s_cursor == 7 ? s_ps2ButtonSelected : s_ps2ButtonPurple);
-	EFFe_DrawPs2TextColor(1327.0f, 737.0f, "ENGAGE", EF_FRONTEND_FONT_BIG, UI_LEFT, colorTable[CT_BLACK], 0.82f, 1.00f);
+		s_cursor == (cooperative ? 7 : 8) ? s_ps2ButtonSelected : s_ps2ButtonPurple);
+	if (cooperative)
+	{
+		EFFe_DrawPs2TextColor(1327.0f, 737.0f, "ENGAGE", EF_FRONTEND_FONT_BIG, UI_LEFT, colorTable[CT_BLACK], 0.82f, 1.00f);
+	}
+	else
+	{
+		EFFe_DrawPs2TextColor(1327.0f, 695.0f, "VIRTUAL", EF_FRONTEND_FONT_BIG, UI_LEFT, colorTable[CT_BLACK], 0.82f, 1.00f);
+		EFFe_DrawPs2TextColor(1327.0f, 758.0f, "VOYAGER", EF_FRONTEND_FONT_BIG, UI_LEFT, colorTable[CT_BLACK], 0.82f, 1.00f);
+	}
 }
 
 static void EFFe_DrawNewGameScreen(void)
@@ -2974,7 +2987,7 @@ static void EFFe_SyncNewGameState(void)
 	s_newgameGenderMale = Q_stricmp(sex, "female") && Q_stricmp(sex, "f");
 }
 
-static void EFFe_StartMap(const char *mapName)
+static void EFFe_StartMap(const char *mapName, qboolean virtualVoyager = qfalse)
 {
 #ifdef _XBOX
 	XBLF("STEFX: EF new game start map='%s' difficulty=%d genderMale=%d catcher=0x%x", mapName ? mapName : "", s_newgameDifficulty, s_newgameGenderMale, ui.Key_GetCatcher());
@@ -2994,12 +3007,12 @@ static void EFFe_StartMap(const char *mapName)
 	ui.Cvar_Set("stefx_splitScreenP2Entity", "-1");
 	s_active = qfalse;
 	UI_ForceMenuOff();
-	ui.Cvar_SetValue("cg_virtualVoyager", 0.0f);
+	ui.Cvar_SetValue("cg_virtualVoyager", virtualVoyager ? 1.0f : 0.0f);
 	if (mapName && mapName[0])
 	{
 #ifdef _XBOX
 		extern bool Sys_XboxQueueMenuMap(const char *mapName, const char *mode, int players);
-		Sys_XboxQueueMenuMap(mapName, "sp", 1);
+		Sys_XboxQueueMenuMap(mapName, virtualVoyager ? "virtualvoyager" : "sp", 1);
 #else
 		ui.Cmd_ExecuteText(EXEC_APPEND, va("map %s\n", mapName));
 #endif
@@ -3505,9 +3518,13 @@ static void EFFe_HandleNewGameKey(int key)
 	{
 		EFFe_StartMap("tutorial");
 	}
-	else
+	else if (s_cursor == 7)
 	{
 		EFFe_StartMap("borg1");
+	}
+	else if (s_cursor == 8)
+	{
+		EFFe_StartMap("tour/deck02", qtrue);
 	}
 }
 
@@ -4330,8 +4347,11 @@ static void EFFe_RunMenuSmoke(int realtime)
 		!Q_stricmp(target, "crew-voyager") ||
 		!Q_stricmp(target, "crew-tour"));
 	desiredCursor = targetCoop ? 2 : (targetHolomatch ? 3 : (targetCrew ? 5 : 0));
-	newGameCursor = !Q_stricmp(target, "tutorial") ? 6 : (!Q_stricmp(target, "engage") ? 7 : 0);
-	if (Q_stricmp(target, "tutorial") && Q_stricmp(target, "engage") && !targetCoop && !targetHolomatch && !targetCrew)
+	newGameCursor = !Q_stricmp(target, "virtualvoyager") ? 8 :
+		(!Q_stricmp(target, "tutorial") ? 6 : (!Q_stricmp(target, "engage") ? 7 : 0));
+	if (Q_stricmp(target, "tutorial") && Q_stricmp(target, "engage") &&
+		Q_stricmp(target, "newgame") && Q_stricmp(target, "virtualvoyager") &&
+		!targetCoop && !targetHolomatch && !targetCrew)
 	{
 		ui.Printf("STEFX_MENU_SMOKE invalid target='%s'\n", target);
 		ui.Cvar_Set("stefx_menu_smoke", "0");
@@ -4792,6 +4812,13 @@ static void EFFe_RunMenuSmoke(int realtime)
 			ui.Cvar_Set("stefx_menu_smoke", "0");
 			s_menuSmokeStage = 0;
 			s_menuSmokeMainDownRemaining = 0;
+			return;
+		}
+		if (!Q_stricmp(s_menuSmokeTarget, "newgame"))
+		{
+			ui.Printf("STEFX_MENU_SMOKE newgame-capture-ready cursor=%d\n", s_cursor);
+			ui.Cvar_Set("stefx_menu_smoke", "0");
+			s_menuSmokeStage = 0;
 			return;
 		}
 		ui.Printf("STEFX_MENU_SMOKE newgame-accept target='%s' cursor=%d item='%s' realtime=%d\n",

@@ -5,6 +5,10 @@
 
 #include "cg_local.h"
 #include "FX_Public.h"
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+extern void CG_STEFX_FxTrace(trace_t *, const vec3_t, const vec3_t,
+	const vec3_t, const vec3_t, int, int);
+#endif
 #ifdef _XBOX
 #include "../../code/win32/xb_log.h"
 #endif
@@ -91,7 +95,11 @@ void FXPrimitive::UpdateOrigin( void )
 		trace_t	trace;
 		float	dot;
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+		CG_STEFX_FxTrace( &trace, m_origin, NULL, NULL, new_origin, -1, CONTENTS_SOLID );
+#else
 		CG_Trace( &trace, m_origin, NULL, NULL, new_origin, -1, CONTENTS_SOLID );
+#endif
 
 		//Hit something
 		if ( trace.fraction < 1.0f && !trace.startsolid && !trace.allsolid )

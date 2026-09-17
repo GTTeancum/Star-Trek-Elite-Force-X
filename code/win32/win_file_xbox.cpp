@@ -26,7 +26,7 @@
 
 struct FileTable
 {
-	bool m_bUsed;
+	LONG m_bUsed;
 	bool m_bErrorsFatal;
 	HANDLE m_Handle;
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
@@ -269,7 +269,8 @@ static wfhandle_t WF_GetFreeHandle(void)
 {
 	for (int i = 0; i < WF_MAX_OPEN_FILES; ++i)
 	{
-		if (!s_FileTable[i].m_bUsed)
+		// File opens can run concurrently with archived sound streaming.
+		if (InterlockedCompareExchange(&s_FileTable[i].m_bUsed, 1, 0) == 0)
 		{
 			return i;
 		}
@@ -336,6 +337,7 @@ int WF_Open(const char* name, bool read, bool aligned)
 		return handle;
 	}
 #endif
+	InterlockedExchange(&s_FileTable[handle].m_bUsed, 0);
 	return -1;
 }
 
@@ -354,11 +356,11 @@ void WF_Close(wfhandle_t handle)
 	{
 		CloseHandle(s_FileTable[handle].m_Handle);
 	}
-	s_FileTable[handle].m_bUsed = false;
 	s_FileTable[handle].m_Handle = INVALID_HANDLE_VALUE;
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	s_FileTable[handle].m_bNtHandle = false;
 #endif
+	InterlockedExchange(&s_FileTable[handle].m_bUsed, 0);
 }
 
 int WF_Read(void* buffer, int len, wfhandle_t handle)

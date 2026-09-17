@@ -1050,10 +1050,8 @@ typedef struct model_s {
 #ifdef STEFX_ELITE_FORCE_SP
 	md4Header_t	*md4;				// only if type == MOD_MDR
 #if defined(_XBOX)
-	// Elite Force's Borg maps precache many distinct MDR bodies.  Keep their
-	// unique surface data resident, but reconstruct compressed animation frames
-	// from a lossless shared base + per-model patch instead of retaining every
-	// complete frame block.
+	// Preserve MDR surfaces and reconstruct animation bytes losslessly: Borg
+	// bodies share a base plus patches; other bodies use independent blocks.
 	const byte	*stefxMdrFrameBase;
 	const unsigned int *stefxMdrFramePatchOffsets;
 	const byte	*stefxMdrFramePatches;
@@ -1796,12 +1794,22 @@ typedef char stefx_xbox_shaderCommands_size[(sizeof(shaderCommands_t) == 132056)
 
 extern	shaderCommands_t	tess;
 
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+void STEFX_WorldVerticesBeginBatch(void);
+void STEFX_WorldVerticesSurface(const void *surface, int count);
+void STEFX_WorldVerticesReset(void);
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+void STEFX_CoopModelBeginBatch(void);
+void STEFX_CoopModelSurface(const md3Surface_t *surface);
+#endif
+#endif
+
 extern	color4ub_t	styleColors[MAX_LIGHT_STYLES];
 extern	bool		styleUpdated[MAX_LIGHT_STYLES];
 
 void RB_BeginSurface(shader_t *shader, int fogNum );
 void RB_EndSurface(void);
-#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
 void R_STEFX_ReportShaderCosts( void );
 #endif
 void RB_CheckOverflow( int verts, int indexes );

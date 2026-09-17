@@ -1014,6 +1014,9 @@ void CG_RegisterClientModels (int entityNum)
 		return;
 	}
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	const unsigned int registrationStarted = (unsigned int)cgi_Milliseconds();
+#endif
 	ent = &g_entities[entityNum];
 
 	if(!ent->client)
@@ -1048,6 +1051,12 @@ void CG_RegisterClientModels (int entityNum)
 	{
 		memcpy(&cgs.clientinfo[entityNum], &ent->client->clientInfo, sizeof(clientInfo_t));
 	}
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	extern unsigned int STEFX_RecordModelRegistration(int entity, unsigned int started);
+	const unsigned int elapsed = STEFX_RecordModelRegistration(entityNum, registrationStarted);
+	XBLog_WriteCriticalf("STEFX_MODEL_REGISTER_TIME: entity=%d time=%d elapsedMs=%u", entityNum, cg.time, elapsed);
+#endif
+
 }
 
 //===================================================================================
@@ -1428,6 +1437,12 @@ static void CG_RegisterGraphics( void ) {
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 					else
 					{
+#if !defined(STEFX_SP_HOSTED_MP)
+						// Save files retain clientInfo, including renderer-local handles.
+						// The new renderer registration invalidates those handles; keep
+						// deferred loading, but require registration before the next draw.
+						g_entities[i].client->clientInfo.infoValid = qfalse;
+#endif
 						if ( stefxEntityPrecacheLogBudget > 0 )
 						{
 							XBLF("STEFX: CG_RegisterGraphics entity=%d defer client model registration to draw",

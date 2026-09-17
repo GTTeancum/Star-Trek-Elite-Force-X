@@ -3,12 +3,13 @@
 
 #include "../tr_local.h"
 #include "retail_renderer_contract.h"
+#include "pvs_probe_bounds.h"
 
 #ifdef _XBOX
+#include "../../win32/xb_log.h"
 extern "C" volatile unsigned int g_SPXBSplitSlotActive;
 extern "C" __declspec(dllexport) volatile unsigned int g_SPXBHMPvsProbe[296] = { 0 };
 static bool s_stefxHMPvsProbeWorldWalk = false;
-#define STEFX_HM_PVS_PROBE_SURFACE_WORDS 110
 #define STEFX_HM_PVS_PROBE_SEEN_BASE 72
 #define STEFX_HM_PVS_PROBE_ADDED_BASE (STEFX_HM_PVS_PROBE_SEEN_BASE + STEFX_HM_PVS_PROBE_SURFACE_WORDS)
 #endif
@@ -421,14 +422,24 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits, qboolean noView
 		surf >= tr.world->surfaces && surf < tr.world->surfaces + tr.world->numsurfaces)
 	{
 		stefxProbeSurfaceIndex = (int)(surf - tr.world->surfaces);
-		stefxProbeSurfaceMask = 1u << (stefxProbeSurfaceIndex & 31);
-		stefxProbeSeenWord = &g_SPXBHMPvsProbe[
-			STEFX_HM_PVS_PROBE_SEEN_BASE + (stefxProbeSurfaceIndex >> 5)];
-		g_SPXBHMPvsProbe[52]++;
-		if (!(*stefxProbeSeenWord & stefxProbeSurfaceMask))
+		const int probeWord = STEFX_PvsProbeSurfaceWord(stefxProbeSurfaceIndex);
+		if (probeWord >= 0)
 		{
-			*stefxProbeSeenWord |= stefxProbeSurfaceMask;
-			g_SPXBHMPvsProbe[53]++;
+			stefxProbeSurfaceMask = 1u << (stefxProbeSurfaceIndex & 31);
+			stefxProbeSeenWord = &g_SPXBHMPvsProbe[
+				STEFX_HM_PVS_PROBE_SEEN_BASE + probeWord];
+			g_SPXBHMPvsProbe[52]++;
+			if (!(*stefxProbeSeenWord & stefxProbeSurfaceMask))
+			{
+				*stefxProbeSeenWord |= stefxProbeSurfaceMask;
+				g_SPXBHMPvsProbe[53]++;
+			}
+		}
+		else
+		{
+			// Record incomplete diagnostic coverage, then render normally.
+			++g_SPXBHMPvsProbe[292]; // First word after the two surface bitmaps.
+			stefxProbeSurfaceIndex = -1;
 		}
 	}
 #endif
@@ -2142,6 +2153,18 @@ void R_AddWorldSurfaces (void) {
 	}
 	stefxProbeFirstDrawSurf = tr.refdef.numDrawSurfs;
 	s_stefxHMPvsProbeWorldWalk = stefxProbePrimary;
+	if (stefxProbePrimary)
+	{
+		g_SPXBHMPvsProbe[292] = 0;
+		static int warnedSurfaceCount = 0;
+		if (tr.world->numsurfaces > STEFX_HM_PVS_PROBE_SURFACE_WORDS * 32 &&
+			warnedSurfaceCount != tr.world->numsurfaces)
+		{
+			warnedSurfaceCount = tr.world->numsurfaces;
+			XBLog_WriteCriticalf("STEFX_PVS_PROBE: bounded bitmap surfaces=%d capacity=%d; rendering all surfaces",
+				tr.world->numsurfaces, STEFX_HM_PVS_PROBE_SURFACE_WORDS * 32);
+		}
+	}
 	R_RecursiveWorldNode( tr.world->nodes, 15, ( 1 << tr.refdef.num_dlights ) - 1 );
 	s_stefxHMPvsProbeWorldWalk = false;
 	if (stefxProbePrimary) {

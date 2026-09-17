@@ -768,6 +768,60 @@ static postRender_t g_postRenders[MAX_POST_RENDERS];
 static int g_numPostRenders = 0;
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+#if defined(STEFX_SP_HOSTED_MP)
+extern "C" volatile unsigned int g_SPXBFxMerged = 0;
+static qboolean R_STEFX_FxMergeReject(int reason, const shader_t *shader, const refEntity_t &e) {
+	static unsigned int reasons[4];
+	if (++reasons[reason] == 1u) {
+		const shaderStage_t &s = shader->stages[0];
+		XBLog_WriteCriticalf("STEFX_FX_MERGE_REJECT: reason=%d shader=%s type=%d fx=%x time=%f passes=%d normal=%d tangent=%d rgb=%d alpha=%d state=%x mods=%d cull=%d",
+			reason, shader->name, e.reType, e.renderfx, e.shaderTime, shader->numUnfoggedPasses,
+			shader->needsNormal, shader->needsTangent, s.rgbGen, s.alphaGen, s.stateBits, s.bundle[0].numTexMods, shader->cullType);
+	}
+	return qfalse;
+}
+// STEFX_FX_BATCH_CONTRACT_BEGIN
+static qboolean R_STEFX_CanMergeExtendedFx(const shader_t *shader, int entityNum, bool animated) {
+	const refEntity_t &e = backEnd.refdef.entities[entityNum].e;
+	if (shader->numUnfoggedPasses != 1 || shader->numDeforms || shader->needsNormal ||
+		shader->needsTangent || shader->sky || shader->remappedShader || e.shaderTime != 0.0f ||
+		(e.renderfx & ~(RF_THIRD_PERSON | RF_FIRST_PERSON))) return R_STEFX_FxMergeReject(0, shader, e);
+	const shaderStage_t &s = shader->stages[0];
+	if (!s.active || s.ss || s.isBumpMap || s.isEnvironment ||
+		s.bundle[1].image || (!animated && s.bundle[0].numTexMods) || s.bundle[0].tcGen != TCGEN_TEXTURE ||
+		(s.rgbGen != CGEN_VERTEX && s.rgbGen != CGEN_EXACT_VERTEX &&
+		 s.rgbGen != CGEN_IDENTITY && s.rgbGen != CGEN_IDENTITY_LIGHTING && s.rgbGen != CGEN_CONST &&
+		 !(animated && s.rgbGen == CGEN_WAVEFORM && s.rgbWave.func != GF_RAND)) ||
+		(s.alphaGen != AGEN_VERTEX && s.alphaGen != AGEN_IDENTITY && s.alphaGen != AGEN_SKIP && s.alphaGen != AGEN_CONST &&
+		 !(animated && s.alphaGen == AGEN_WAVEFORM && s.alphaWave.func != GF_RAND)) ||
+		(s.stateBits & (GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS)) != (GLS_SRCBLEND_ONE | GLS_DSTBLEND_ONE) ||
+		(s.stateBits & (GLS_DEPTHMASK_TRUE | GLS_DEPTHTEST_DISABLE | GLS_ATEST_BITS))) return R_STEFX_FxMergeReject(1, shader, e);
+	// All accepted entities use the same zero time offset. These texture
+	// operations and deterministic waves therefore evaluate identically in a
+	// combined batch. Entity translation and random wave state stay separate.
+	for (int m = 0; m < s.bundle[0].numTexMods; ++m) {
+		const texModInfo_t &mod = s.bundle[0].texMods[m];
+		switch (mod.type) {
+		case TMOD_NONE: case TMOD_TRANSFORM: case TMOD_TURBULENT:
+		case TMOD_SCROLL: case TMOD_SCALE: case TMOD_ROTATE: break;
+		case TMOD_STRETCH:
+			if (mod.wave.func != GF_RAND) break;
+		default: return R_STEFX_FxMergeReject(1, shader, e);
+		}
+	}
+	// These generators emit world-space vertices and bake entity color into
+	// each vertex. Do not merge immediate-mode beams or stateful legacy bolts.
+	switch (e.reType) {
+	case RT_SPRITE: case RT_ORIENTED_QUAD: case RT_LINE:
+	case RT_TEXTURED_LINE: case RT_ORIENTED_LINE: case RT_TAPERED_LINE:
+	case RT_BEZIER: case RT_EF_ORIENTED_SPRITE: case RT_EF_ALPHA_VERT_POLY:
+	case RT_EF_LIGHTNING: case RT_EF_ELECTRICITY:
+		return shader->cullType == CT_TWO_SIDED ? qtrue : R_STEFX_FxMergeReject(2, shader, e);
+	default: return R_STEFX_FxMergeReject(3, shader, e);
+	}
+}
+// STEFX_FX_BATCH_CONTRACT_END
+#endif
 static qboolean R_STEFX_CanMergeSplitVertexFx( const shader_t *shader, int entityNum )
 {
 	const trRefEntity_t *entity;
@@ -777,6 +831,13 @@ static qboolean R_STEFX_CanMergeSplitVertexFx( const shader_t *shader, int entit
 	{
 		return qfalse;
 	}
+
+#if defined(STEFX_SP_HOSTED_MP)
+	static cvar_t *extended;
+	if (!extended) extended = Cvar_Get("r_efFxBatch", "1", 0);
+	if (extended->integer && R_STEFX_CanMergeExtendedFx(shader, entityNum, extended->integer > 1)) return qtrue;
+	// Preserve the existing, proven two-material exception as the fallback.
+#endif
 
 	/* These definitions are one-pass, additive, two-sided, vertex-colored
 	 * EF sprite shaders.  Keep the exception name-exact and type-exact so lines,
@@ -957,6 +1018,13 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 		stefxMergeVertexFx = R_STEFX_CanMergeSplitVertexFx( shader, entityNum );
+#if defined(STEFX_SP_HOSTED_MP)
+		// Both sides must satisfy the same contract; a normal sprite must not
+		// absorb a previous depth-hacked, transformed or forced-alpha entity.
+		stefxMergeVertexFx = stefxMergeVertexFx && !fogNum && !dlighted &&
+			shader == oldShader && R_STEFX_CanMergeSplitVertexFx(oldShader, oldEntityNum);
+		if (stefxMergeVertexFx && entityNum != oldEntityNum) ++g_SPXBFxMerged;
+#endif
 #endif
 
 		//
@@ -1385,8 +1453,23 @@ void	RB_SetGL2D (void) {
 	// FakeGL's D3D viewport supplies the screen-space Y inversion. Retain the
 	// shipping Xbox orthographic ordering while using Elite Force's full-screen
 	// 2D viewport; reversing these bounds mirrors every HUD command vertically.
+	#if defined(STEFX_ELITE_FORCE_SP)
+	// EF's CG_AdjustFrom640 and CG_FillRect2 submit framebuffer coordinates,
+	// including camera bars and fades. JA's 720-unit widescreen projection
+	// compresses those coordinates and leaves the last ninth uncovered.
+	if (!::Menus_AnyFullScreenVisible() && cls.state == CA_ACTIVE) {
+		qglOrtho (0, glConfig.vidWidth, 0, glConfig.vidHeight, 0, 1);
+		static int s_efOverlayProjectionLogs = 0;
+		if (s_efOverlayProjectionLogs < 2) {
+			XBLog_WriteCriticalf("STEFX_OVERLAY_PROJECTION: pixels=%dx%d widescreen=%d",
+				glConfig.vidWidth, glConfig.vidHeight, widescreen ? 1 : 0);
+			++s_efOverlayProjectionLogs;
+		}
+	}
+	#else
 	if(widescreen && !::Menus_AnyFullScreenVisible() && cls.state == CA_ACTIVE)
 		qglOrtho (0, 720, 0, 480, 0, 1);
+	#endif
 	else
 		qglOrtho (0, 640, 0, 480, 0, 1);
 
@@ -2310,8 +2393,10 @@ void RB_ExecuteRenderCommands( const void *data ) {
 				g_SPXBPerfBackendBatches = (unsigned int)backEnd.pc.c_shaders;
 			}
 #endif
-#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
 			R_STEFX_ReportShaderCosts();
+			extern void R_STEFX_ReportMdrSkinCost(void);
+			R_STEFX_ReportMdrSkinCost();
 #endif
 			return;
 		}

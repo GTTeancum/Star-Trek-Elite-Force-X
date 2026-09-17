@@ -80,9 +80,40 @@ extern "C" volatile unsigned int g_SPXBAudioFaceRenderLastVolume;
 extern "C" volatile unsigned int g_SPXBAudioFaceRenderLastSkin;
 extern "C" volatile unsigned int g_SPXBAudioFaceRenderLastExtensions;
 
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS) && !defined(STEFX_SP_HOSTED_MP)
+#include "../../code/win32/xb_perf.h"
+#include "stefx_player_profile.h"
+extern "C" volatile unsigned int g_SPXBCoopPlayerPhases[520] = {0};
+void CG_STEFX_BeginPlayerProfile(void) {
+	STEFX_ResetPlayerProfile(cg_stefxSplitScreen.integer && cg_stefxSplitScreenPlayers.integer>=2);
+}
+void CG_STEFX_EndPlayerProfile(void) {
+	if (!s_playerProfiling) return;
+	s_playerProfiling=false;
+	++g_SPXBCoopPlayerPhases[0];
+	g_SPXBCoopPlayerPhases[1]=1;
+	g_SPXBCoopPlayerPhases[2]=cg.clientFrame;
+	g_SPXBCoopPlayerPhases[3]=cg.time;
+	g_SPXBCoopPlayerPhases[4]=s_playerEntered;
+	g_SPXBCoopPlayerPhases[5]=s_playerCompleted;
+	unsigned int total=0;
+	for (int i=0;i<256;++i) {
+		g_SPXBCoopPlayerPhases[8+2*i]=s_playerCycles[i];
+		g_SPXBCoopPlayerPhases[9+2*i]=s_playerVisits[i];
+		total+=s_playerCycles[i];
+	}
+	g_SPXBCoopPlayerPhases[6]=total;
+	g_SPXBCoopPlayerPhases[7]=s_playerProfile ? 1u : 0u;
+	++g_SPXBCoopPlayerPhases[0];
+}
+#define STEFX_PLAYER_TIMING(stage) STEFX_ProfilePlayerPhase(stage)
+#else
+#define STEFX_PLAYER_TIMING(stage) ((void)0)
+#endif
 #define STEFX_PLAYER_PHASE(stage, cent) \
+	( STEFX_PLAYER_TIMING(stage), \
 	( g_SPXBPhaseLast = 0xD0000000u | ( ( (unsigned int)(stage) & 0xffu ) << 16 ) | \
-		( (unsigned int)(cent)->currentState.number & 0xffffu ) )
+		( (unsigned int)(cent)->currentState.number & 0xffffu ) ) )
 
 static unsigned int STEFX_BorgModelNameHash( const char *text )
 {
@@ -115,6 +146,23 @@ static qboolean STEFX_ClaimDeferredModelRegistration( void )
 	}
 	s_registrationFrame = cg.clientFrame;
 	return qtrue;
+}
+// Count / total ms / max ms / peak entity / peak game time / last entity / last ms / last game time.
+extern "C" __declspec(dllexport) volatile unsigned int g_SPXBModelRegisterStats[8] = { 0 };
+unsigned int STEFX_RecordModelRegistration(int entity, unsigned int started)
+{
+	const unsigned int elapsed = (unsigned int)cgi_Milliseconds() - started;
+	++g_SPXBModelRegisterStats[0];
+	g_SPXBModelRegisterStats[1] += elapsed;
+	if (elapsed > g_SPXBModelRegisterStats[2]) {
+		g_SPXBModelRegisterStats[2] = elapsed;
+		g_SPXBModelRegisterStats[3] = entity;
+		g_SPXBModelRegisterStats[4] = cg.time;
+	}
+	g_SPXBModelRegisterStats[5] = entity;
+	g_SPXBModelRegisterStats[6] = elapsed;
+	g_SPXBModelRegisterStats[7] = cg.time;
+	return elapsed;
 }
 #endif
 
@@ -3585,6 +3633,9 @@ CG_Player
 ===============
 */
 void CG_Player( centity_t *cent ) {
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && !defined(STEFX_SP_HOSTED_MP)
+	STEFX_PlayerProfile stefxPlayerProfile;
+#endif
 	clientInfo_t	*ci;
 	refEntity_t		legs;
 	refEntity_t		torso;

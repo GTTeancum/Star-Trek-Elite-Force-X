@@ -728,6 +728,18 @@ static qboolean STEFX_SplitCoopP1Ready( void )
 		&& g_entities[0].health > 0 );
 }
 
+// Retain the last spawn boundary even if ordinary log output stops.
+__declspec(dllexport) volatile unsigned int g_SPXBCoopSpawnStage = 0;
+static void STEFX_CoopSpawnStage( unsigned int stage )
+{
+	static int logBudget = 24;
+	g_SPXBCoopSpawnStage = stage;
+	if (logBudget > 0)
+	{
+		--logBudget;
+		XBLog_WriteCriticalf("STEFX_COOP_SPAWN_STAGE: stage=%u time=%d", stage, level.time);
+	}
+}
 static gentity_t *STEFX_SplitCoopSpawnP2( void )
 {
 	static int s_spawnLogBudget = 16;
@@ -751,9 +763,12 @@ static gentity_t *STEFX_SplitCoopSpawnP2( void )
 
 	p1 = &g_entities[0];
 	npcType = STEFX_SplitCoopP2NPCType();
+	STEFX_CoopSpawnStage(1);
 	STEFX_SplitCoopPlacementFromP1( origin, angles );
+	STEFX_CoopSpawnStage(2);
 
 	spawner = G_Spawn();
+	STEFX_CoopSpawnStage(3);
 	if ( !spawner )
 	{
 		XBLog_Write( "STEFX_SPLIT_COOP spawn failed: no EF spawner entity" );
@@ -787,7 +802,9 @@ static gentity_t *STEFX_SplitCoopSpawnP2( void )
 		--s_spawnLogBudget;
 	}
 
+	STEFX_CoopSpawnStage(4);
 	NPC_Spawn( spawner, spawner, spawner );
+	STEFX_CoopSpawnStage(5);
 	spawner->e_ThinkFunc = thinkF_G_FreeEntity;
 	spawner->nextthink = level.time + FRAMETIME;
 
@@ -795,8 +812,10 @@ static gentity_t *STEFX_SplitCoopSpawnP2( void )
 	if ( !p2 )
 	{
 		gi.cvar_set( "stefx_splitScreenP2Entity", "-1" );
+		STEFX_CoopSpawnStage(6);
 		return NULL;
 	}
+	STEFX_CoopSpawnStage(7);
 
 	XBLF( "STEFX_SPLIT_COOP spawn found ent=%d npc='%s' flags=0x%x eFlags=0x%x think=%d nextthink=%d",
 		p2->s.number,
@@ -829,6 +848,7 @@ static gentity_t *STEFX_SplitCoopSpawnP2( void )
 		--s_spawnLogBudget;
 	}
 
+	STEFX_CoopSpawnStage(8);
 	return p2;
 }
 
@@ -1301,6 +1321,40 @@ static int STEFX_SplitCoopCycleWeapon( const gentity_t *p2, int currentWeapon, i
 	return currentWeapon;
 }
 
+// STEFX_COOP_WEAPON_REQUEST_BEGIN
+static int STEFX_SplitCoopWeaponRequest( const gentity_t *p2, int weaponDelta, int time )
+{
+	static const gentity_t *owner;
+	static const gclient_t *client;
+	static int lastTime, lastActual, selected;
+	if ( !p2 || !p2->client )
+	{
+		owner = NULL;
+		client = NULL;
+		return WP_NONE;
+	}
+	const int actual = p2->client->ps.weapon;
+	// Keep a button-edge request until PM_FinishWeaponChange consumes it.
+	// Player replacement, time resets and script changes establish a new base.
+	if ( owner != p2 || client != p2->client || time < lastTime ||
+		actual != lastActual || !STEFX_SplitCoopWeaponSelectable( p2, selected ) )
+	{
+		selected = actual;
+	}
+	owner = p2;
+	client = p2->client;
+	lastTime = time;
+	lastActual = actual;
+	if ( !STEFX_SplitCoopWeaponSelectable( p2, selected ) || selected == WP_NONE )
+	{
+		const int preferred = g_entities[0].client ? g_entities[0].client->ps.weapon : WP_NONE;
+		selected = STEFX_SplitCoopChooseUsableWeapon( p2, preferred );
+	}
+	selected = STEFX_SplitCoopCycleWeapon( p2, selected, weaponDelta );
+	return selected;
+}
+// STEFX_COOP_WEAPON_REQUEST_END
+
 static void STEFX_SplitCoopRunFrame( void )
 {
 	static qboolean s_loggedInactive = qfalse;
@@ -1454,14 +1508,8 @@ static void STEFX_SplitCoopRunFrame( void )
 		cmd.angles[ROLL] = 0;
 	}
 
-	cmd.weapon = p2->client->ps.weapon;
-	if ( !STEFX_SplitCoopWeaponSelectable( p2, cmd.weapon ) || cmd.weapon == WP_NONE )
-	{
-		const int p1Weapon = g_entities[0].client ? g_entities[0].client->ps.weapon : WP_NONE;
-		cmd.weapon = STEFX_SplitCoopChooseUsableWeapon( p2, p1Weapon );
-	}
-	oldWeapon = cmd.weapon;
-	cmd.weapon = STEFX_SplitCoopCycleWeapon( p2, cmd.weapon, weaponDelta );
+	oldWeapon = p2->client->ps.weapon;
+	cmd.weapon = STEFX_SplitCoopWeaponRequest( p2, weaponDelta, level.time );
 	if ( s_weaponLogBudget > 0 && weaponDelta )
 	{
 		XBLF( "STEFX_SPLIT_COOP weapon cycle ent=%d delta=%d old=%d new=%d bits=0x%x",

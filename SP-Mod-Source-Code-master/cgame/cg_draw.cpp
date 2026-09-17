@@ -235,6 +235,22 @@ Used for both the status bar and the scoreboard
 ================
 */
 int	USE_ENT_NUM	= 2048;
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+// Rendering fixture only: no dialogue, ICARUS tasks or audio state are changed.
+static qboolean CG_CommunicatorVisualFixture(void)
+{
+	static vmCvar_t enabled;
+	static qboolean registered = qfalse;
+	if (!registered)
+	{
+		cgi_Cvar_Register(&enabled, "stefx_diag_communicator", "0", 0);
+		registered = qtrue;
+	}
+	cgi_Cvar_Update(&enabled);
+	return enabled.integer != 0 ? qtrue : qfalse;
+}
+extern qhandle_t CG_RegisterHeadSkin(const char *, const char *, qboolean *);
+#endif
 void CG_DrawHead( float x, float y, float w, float h, int speaker_i, vec3_t headAngles ) 
 {
 	qhandle_t		hm = 0;
@@ -245,9 +261,26 @@ void CG_DrawHead( float x, float y, float w, float h, int speaker_i, vec3_t head
 	gentity_t	*ent;
 	qboolean	extensions = qfalse;
 	int			talking = 0;
+	qboolean visualFixture = qfalse;
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+	visualFixture = CG_CommunicatorVisualFixture();
+	if (visualFixture)
+	{
+		hm = cgi_R_RegisterModel("models/players/janeway/head.md3");
+		hs = CG_RegisterHeadSkin("janeway", "default", &extensions);
+		talking = -1; // neutral face; do not query or alter sound playback.
+		static qboolean logged = qfalse;
+		if (!logged)
+		{
+			XBLog_WriteCriticalf("STEFX_COMMUNICATOR_FIXTURE: model=%d skin=%d", hm, hs);
+			logged = qtrue;
+		}
+		if (!hm) return;
+	}
+#endif
 
 	//If the talking ent is actually on the level, use his info
-	if ( cg.gameTextEntNum != -1 && cg.gameTextEntNum < ENTITYNUM_WORLD )
+	if ( !visualFixture && cg.gameTextEntNum != -1 && cg.gameTextEntNum < ENTITYNUM_WORLD )
 	{
 		ent = &g_entities[cg.gameTextEntNum];
 		if ( ent && ent->client )
@@ -316,7 +349,11 @@ static void CG_DrawTalk(centity_t	*cent)
 //	int			totalLines,y,i;
 	vec4_t		color; 
 
-	if ( cg.gameNextTextTime > cg.time) 
+	if ( cg.gameNextTextTime > cg.time
+#if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
+		|| CG_CommunicatorVisualFixture()
+#endif
+		)
 	{
 		color[0] = colorTable[CT_BLACK][0];
 		color[1] = colorTable[CT_BLACK][1];
@@ -2982,7 +3019,7 @@ void CG_DrawActive( stereoFrame_t stereoView ) {
 
 		if ( s_stefxSplitHudLogBudget > 0 )
 		{
-			XBLF("STEFX_SPLIT_HUD: draw two viewport HUDs screen=%gx%g half=%g client=%d p2=%d",
+			XBLF("STEFX_SPLIT_HUD: draw two viewport HUDs only screen=%gx%g half=%g client=%d p2=%d",
 				hudW,
 				hudH,
 				halfH,
@@ -2999,9 +3036,13 @@ void CG_DrawActive( stereoFrame_t stereoView ) {
 	}
 	else
 #endif
-	g_SPXBPhaseLast = 0x45473230; /* 'EG20' */
-	CG_Draw2D();
-	g_SPXBPhaseLast = 0x45473231; /* 'EG21' */
+	{
+		// Keep the full-screen HUD and its breadcrumbs in the single-view branch.
+		// Otherwise the extra draw overlaps P2 after clearing the split viewport.
+		g_SPXBPhaseLast = 0x45473230; /* 'EG20' */
+		CG_Draw2D();
+		g_SPXBPhaseLast = 0x45473231; /* 'EG21' */
+	}
 #ifdef _XBOX
 	g_stefxCgDraw2DMsec = cgi_Milliseconds() - xboxProfileStart;
 	if (xboxDrawActiveLog) XBLog_Write("JA: CL_EARLY EF CG_DrawActive after CG_Draw2D");
