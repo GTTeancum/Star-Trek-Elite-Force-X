@@ -23,13 +23,21 @@ two-player co-op, and gapless three/four-player Holomatch with unique controls,
 bots, and the shared native D3D8 renderer. Work paused during the standard-SP
 stability and performance pass after the Holomatch and Voyager Crew work.
 
+## Screenshots
+
+![Single-player campaign gameplay in Borg territory](docs/screenshots/single-player-borg1.png)
+
+| Four-player Holomatch | Bot-backed four-viewport test setup |
+| --- | --- |
+| ![Four simultaneous Holomatch viewports](docs/screenshots/holomatch-four-player.png) | ![Player one setup with bot-backed viewports two through four](docs/screenshots/holomatch-bot-setup.png) |
+
 ## Resume From This Exact Checkpoint
 
 The authoritative Git ref is the head of branch `native-d3d8-perf` on
 `origin`. Clone and restore the intentionally untracked private inputs:
 
 ```powershell
-git clone https://github.com/GTTeancum/Jedi-Academy-X.git Star-Trek-Elite-Force-X
+git clone https://github.com/GTTeancum/Star-Trek-Elite-Force-X.git
 Set-Location Star-Trek-Elite-Force-X
 git checkout native-d3d8-perf
 
