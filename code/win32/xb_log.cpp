@@ -941,6 +941,11 @@ static unsigned int s_xboxPerfNextSampleMsec = 0;
 
 void XBPerf_BeginFrame(unsigned int realtimeMsec, int gameplayActive)
 {
+    // Detailed research telemetry is opt-in; tester builds retain errors and FPS.
+#if !defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    g_SPXBPerfSampleActive = 0;
+    return;
+#endif
     g_SPXBPerfSampleActive = 0;
     if (!gameplayActive)
     {
@@ -3481,6 +3486,10 @@ void XBLog_WriteCriticalf(const char *fmt, ...)
 
 void XBLog_WriteProfile(const char *msg)
 {
+    // Detailed research telemetry is opt-in; tester builds retain errors and FPS.
+#if !defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    return;
+#endif
     unsigned int slot;
     if (!msg) return;
     slot = g_SPXBProfileMirrorIndex & 7u;
@@ -3494,6 +3503,10 @@ void XBLog_WriteProfile(const char *msg)
 
 void XBLog_WriteFrameProfile(const char *msg)
 {
+    // Detailed research telemetry is opt-in; tester builds retain errors and FPS.
+#if !defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    return;
+#endif
     unsigned int slot;
     if (!msg) return;
     slot = g_SPXBFrameProfileMirrorIndex & 31u;
@@ -3519,6 +3532,10 @@ void XBLog_WriteFpsProfile(const char *msg)
 
 void XBLog_WriteRingMarker(const char *msg)
 {
+    // Detailed research telemetry is opt-in; tester builds retain errors and FPS.
+#if !defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    return;
+#endif
     char buf[XBL_BUF_SIZE];
     int len;
     if (!msg) return;
@@ -3532,6 +3549,10 @@ void XBLog_WriteRingMarker(const char *msg)
 
 void XBLog_WriteRingMarkerf(const char *fmt, ...)
 {
+    // Detailed research telemetry is opt-in; tester builds retain errors and FPS.
+#if !defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    return;
+#endif
     char buf[XBL_BUF_SIZE];
     va_list args;
     if (!fmt) return;

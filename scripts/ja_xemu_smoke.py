@@ -1613,6 +1613,7 @@ def main():
     parser.add_argument("--name", default="ja_xemu")
     parser.add_argument("--port", type=int, default=4460)
     parser.add_argument("--duration", type=int, default=60)
+    parser.add_argument("--stop-file", help="Finish with normal diagnostics when this file appears")
     parser.add_argument("--interval", type=int, default=5)
     parser.add_argument("--first-shot-delay", type=float, default=0.0,
                         help="Seconds to wait before the first framebuffer capture.")
@@ -1711,6 +1712,10 @@ def main():
     parser.add_argument("--poll-xblog-phys-delta", default="0x284000",
                         help="Auto-resolved XBLog VA minus physical monitor address. Use 0 to poll virtual x/ memory.")
     args = parser.parse_args()
+    if args.stop_file:
+        args.stop_file = os.path.abspath(args.stop_file)
+        if os.path.exists(args.stop_file):
+            parser.error('--stop-file already exists; use a fresh run marker')
     if args.start_paused and args.no_monitor:
         parser.error("--start-paused requires the native monitor")
 
@@ -2912,6 +2917,9 @@ def main():
         next_eip_sample = 0.0
         shot = 0
         while time.time() - start < args.duration:
+            if args.stop_file and os.path.exists(args.stop_file):
+                log("requested_stop_file=%s" % args.stop_file)
+                break
             elapsed = time.time() - start
             rc = proc.poll()
             if rc is not None:

@@ -232,6 +232,7 @@ def main():
     p.add_argument('--map', required=True)
     p.add_argument('--name', required=True)
     p.add_argument('--seconds', type=int, default=240)
+    p.add_argument('--stop-file', type=Path, help='Request normal diagnostic shutdown with a fresh file marker')
     p.add_argument('--port', type=int, default=4475)
     p.add_argument('--gdb-port', type=int, help='Local guest debugger for diagnostic probes only')
     p.add_argument('--xemu-exe', type=Path, help='Pinned emulator executable for this run')
@@ -256,6 +257,10 @@ def main():
     p.add_argument('--borg1-slice-warp', action='store_true',
                    help='Use the existing smoke-harness Borg benchmark start; co-op borg1 only')
     a = p.parse_args()
+    if a.stop_file:
+        a.stop_file = a.stop_file.resolve()
+        if a.stop_file.exists():
+            p.error('--stop-file already exists; use a fresh run marker')
     if a.flight_recorder and not a.diagnostic:
         p.error('--flight-recorder requires --diagnostic')
     if (not math.isfinite(a.sample_eip_interval) or a.sample_eip_interval < 0 or
@@ -405,6 +410,8 @@ def main():
         if a.xemu_exe:
             command += ['--xemu-exe', str(a.xemu_exe.resolve())]
         command += ['--process-priority', a.process_priority]
+        if a.stop_file:
+            command += ['--stop-file', str(a.stop_file)]
         if a.gdb_port:
             command += ['--gdb-port', str(a.gdb_port)]
         if a.sample_eip_interval:
@@ -472,6 +479,7 @@ def main():
                                    ('_g_SPXBWorldVertices', 'world_vertices', 32),
                                    ('_g_SPXBWorldArrays', 'world_arrays', 32),
                                    ('_g_SPXBCoopModelPvs', 'coop_model_pvs', 32),
+                                   ('_g_SPXBCoopResolution', 'coop_resolution', 32),
                                    ('_g_SPXBInterleavedVertices', 'interleaved_vertices', 32),
                                    ('_g_SPXBMdrSkinCache', 'mdr_skin_cache', 32),
                                    ('_g_SPXBMdrSkinMismatch', 'mdr_skin_mismatch', 128),

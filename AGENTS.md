@@ -1,5 +1,25 @@
 # Jedi Academy Xbox Build - Project Notes
 
+## Tester rebuild authorized � 2026-09-22
+
+User ended the optimization pass and requested unnecessary logging removal,
+production tester rebuild, commit and push. Do not resume the FPS experiments.
+Resolution/pillarboxing remains default OFF. Production skips detailed frame
+sampling and research log-ring writes, retaining errors and basic FPS records.
+See `notes/tester_build_2026-09-22.md` for final build and package evidence.
+All benchmark processes have ended and the experiment ISO is restored.
+
+## Co-op resolution experiment — 2026-09-17
+
+User requested a long baseline followed by lower resolution plus4:3 pillarboxing.
+Both900-second runs completed live/error-clear/restored. Overlapping native XEMU
+FPS was4.824 baseline versus1.791 candidate, with severe candidate stalls.
+GranTurismo2PC GPU activity affected parts of BOTH runs; this is not an isolated
+causal performance estimate. Earlier overlap before recorded activity was also
+slower (3.810 versus2.279). Keep `r_efCoopLowRes` defaultOFF. This SDK scaling path
+does not free framebuffer RAM. See `notes/coop_resolution_2026-09-17.md` for intro
+exclusion, ammo/workload limits, immutable evidence and exact scope. No active run.
+
 ## Stabilization authorized — 2026-09-17
 
 User accepted the audit and explicitly authorized necessary stabilization,

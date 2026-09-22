@@ -49,6 +49,27 @@ static cvar_t *s_stefxSafeAreaTop;
 static cvar_t *s_stefxSafeAreaRight;
 static cvar_t *s_stefxSafeAreaBottom;
 
+// Opt-in co-op experiment: preserve the display mode and buffer capacities.
+// The SDK scales rasterization/presentation; this does not reclaim RAM.
+static qboolean STEFX_CoopLowResolution(void)
+{
+#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	static cvar_t *enabled;
+	if (!enabled)
+		enabled = Cvar_Get("r_efCoopLowRes", "0", 0);
+	return enabled->integer == 1 &&
+		Cvar_VariableIntegerValue("stefx_splitScreen") &&
+		Cvar_VariableIntegerValue("stefx_splitScreenPlayers") == 2 &&
+		!Q_stricmp(Cvar_VariableString("stefx_splitScreenMode"), "coop");
+#else
+	return qfalse;
+#endif
+}
+
+extern "C" {
+volatile unsigned int g_SPXBCoopResolution[8];
+}
+
 static int STEFX_SafeAreaClamp(int value, int maximum)
 {
 	if (value < 0)
@@ -72,6 +93,13 @@ static void STEFX_GetSafeArea(int *left, int *top, int *right, int *bottom)
 	*top = STEFX_SafeAreaClamp(s_stefxSafeAreaTop->integer, glConfig.vidHeight * 15 / 100);
 	*right = STEFX_SafeAreaClamp(s_stefxSafeAreaRight->integer, glConfig.vidWidth * 15 / 100);
 	*bottom = STEFX_SafeAreaClamp(s_stefxSafeAreaBottom->integer, glConfig.vidHeight * 15 / 100);
+	if (STEFX_CoopLowResolution() && glw_state && glw_state->isWidescreen)
+	{
+		// A 3/4-width region in 16:9 output is physically 4:3.
+		const int border = glConfig.vidWidth / 8;
+		if (*left < border) *left = border;
+		if (*right < border) *right = border;
+	}
 }
 
 // Map every requested D3D-space rectangle through one display-safe rectangle.
@@ -3452,6 +3480,32 @@ GLboolean dllBeginFrame(void)
 {
 	STEFX_D3D8_InvalidateTextureStageCache();
 #ifdef _XBOX
+	{
+		static int previous = -1;
+		const int active = STEFX_CoopLowResolution() ? 1 : 0;
+		// Set scale before any drawing. Restore it when returning to ordinary SP.
+		if (active || previous == 1)
+			glw_state->device->SetBackBufferScale(active ? 0.8f : 1.0f,
+				active ? 0.8f : 1.0f);
+		if (active != previous)
+		{
+			float sx = 1.0f, sy = 1.0f;
+			glw_state->device->GetBackBufferScale(&sx, &sy);
+			int left, top, right, bottom;
+			STEFX_GetSafeArea(&left, &top, &right, &bottom);
+			g_SPXBCoopResolution[0] = 1;
+			g_SPXBCoopResolution[1] = active;
+			g_SPXBCoopResolution[2] = (unsigned int)(sx * 1000.0f + 0.5f);
+			g_SPXBCoopResolution[3] = (unsigned int)(sy * 1000.0f + 0.5f);
+			g_SPXBCoopResolution[4] = left;
+			g_SPXBCoopResolution[5] = right;
+			g_SPXBCoopResolution[6] = glConfig.vidWidth;
+			g_SPXBCoopResolution[7] = glConfig.vidHeight;
+			XBLF("STEFX_COOP_RESOLUTION: active=%d scale=%g,%g logical=%dx%d borders=%d,%d backing_buffers_unchanged=1",
+				active, sx, sy, glConfig.vidWidth, glConfig.vidHeight, left, right);
+			previous = active;
+		}
+	}
 	STEFX_ScratchFrameBegin();
 #endif
 	GLboolean result = glw_state->device->BeginScene() == D3D_OK;
@@ -3892,7 +3946,8 @@ float GLW_GetPixelAspect(void)
 {
     if (!glw_state || !glw_state->isWidescreen || glConfig.vidWidth <= 0 || glConfig.vidHeight <= 0)
         return 1.0f;
-    return (16.0f / 9.0f) * (float)glConfig.vidHeight / (float)glConfig.vidWidth;
+    const float displayAspect = STEFX_CoopLowResolution() ? (4.0f / 3.0f) : (16.0f / 9.0f);
+    return displayAspect * (float)glConfig.vidHeight / (float)glConfig.vidWidth;
 }
 
 static DWORD s_xboxPresentationFlags = 0;
