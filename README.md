@@ -5,6 +5,8 @@ campaign, two-player cooperative play, and local Holomatch to the original
 Xbox. The active implementation uses one shared Xbox engine/runtime source
 tree under `code/`:
 
+docs/screenshots/box art.png
+
 - `default.xbe` runs the campaign and cooperative personalities.
 - `efmp.xbe` runs SP-hosted Holomatch.
 - Both executables use one `BaseEF` runtime.
