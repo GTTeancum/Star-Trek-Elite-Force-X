@@ -2,11 +2,12 @@
 
 Star Trek: Elite Force X brings the *Star Trek: Voyager – Elite Force*
 campaign, two-player cooperative play, and local Holomatch to the original
-Xbox. The active implementation uses one shared Xbox engine/runtime source
-tree under `code/`:
+Xbox. 
 
 ![Box art](docs/screenshots/box_art.png)
 
+The active implementation uses one shared Xbox engine/runtime source
+tree under `code/`:
 - `default.xbe` runs the campaign and cooperative personalities.
 - `efmp.xbe` runs SP-hosted Holomatch.
 - Both executables use one `BaseEF` runtime.
