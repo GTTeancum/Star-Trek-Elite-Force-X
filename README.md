@@ -1,13 +1,5 @@
 # Star Trek: Elite Force X
 
-> **Archived development checkpoint — 2026-08-31**
->
-> Development was deliberately paused after a month-long integration and
-> optimization effort. This branch is a storage checkpoint, not a release
-> candidate. Do not infer qualification from a successful build or from the
-> historical high-FPS diagnostic runs. The unresolved issues and honest
-> performance status are recorded below.
-
 Star Trek: Elite Force X brings the *Star Trek: Voyager – Elite Force*
 campaign, two-player cooperative play, and local Holomatch to the original
 Xbox. The active implementation uses one shared Xbox engine/runtime source
@@ -30,55 +22,6 @@ stability and performance pass after the Holomatch and Voyager Crew work.
 | Four-player Holomatch | Bot-backed four-viewport test setup |
 | --- | --- |
 | ![Four simultaneous Holomatch viewports](docs/screenshots/holomatch-four-player.png) | ![Player one setup with bot-backed viewports two through four](docs/screenshots/holomatch-bot-setup.png) |
-
-## Resume From This Exact Checkpoint
-
-The authoritative Git ref is the head of branch `native-d3d8-perf` on
-`origin`. Clone and restore the intentionally untracked private inputs:
-
-```powershell
-git clone https://github.com/GTTeancum/Star-Trek-Elite-Force-X.git
-Set-Location Star-Trek-Elite-Force-X
-git checkout native-d3d8-perf
-
-Copy-Item `
-  'Z:\Programming\Archives\Star-Trek-Elite-Force-X-2026-08-31\third_party_private' `
-  '.\third_party_private' -Recurse
-
-& .\scripts\check_resume_prerequisites.ps1
-```
-
-On the workstation used for this checkpoint, the non-Git archive is:
-
-`Z:\Programming\Archives\Star-Trek-Elite-Force-X-2026-08-31`
-
-It contains the complete ignored `third_party_private` tree, the 1.75 GB retail
-source ISO, and the latest `default.xbe`, `efmp.xbe`, map files, and sound
-manifests for comparison. It intentionally does not contain the disposable
-3.3 GB direct-map diagnostic XISO. The canonical extracted runtime seed remains
-outside the repository at:
-
-`C:\Games\Emulators\stefx_iso_seed_complete`
-
-Do not delete either external location when removing a checkout. See
-`notes/archive_checkpoint_2026-08-31.md` for hashes and archive contents.
-
-## Documentation Authority
-
-Read the files in this order when restarting:
-
-1. `README.md` — bootstrap, architecture, current state, and restart boundary.
-2. `AGENTS.md` — non-negotiable repository and testing rules.
-3. `GAME_TODO.md` — concise open work and retained implementation state.
-4. `HOLOMATCH_QUALIFICATION.md` — detailed chronological Holomatch evidence.
-5. `notes/archive_checkpoint_2026-08-31.md` — exact storage manifest and last
-   SP observations.
-
-`BUILD_XBOX.md`, `CODEX_HANDOFF.md`, the `CLAUDE*` files, and the other
-top-level engineering reports are historical. They remain useful archaeology,
-but some predate the clean XDK 5558 build, SP-hosted Holomatch, XEMU/LLE, and
-the global prohibition on computer control. When they conflict, the five files
-above win.
 
 ## Required Local Dependencies
 
