@@ -3,9 +3,12 @@
 #include <xtl.h>
 #include "../game/q_shared.h"
 #include "qcommon.h"
+#include "../win32/xb_log.h"
+#include <stddef.h>
 
 #define SETTINGS_VERSION_LEGACY	0x00082877
-#define SETTINGS_VERSION		0x00082901
+#define SETTINGS_VERSION_CALIBRATION 0x00082901
+#define SETTINGS_VERSION		0x00082902
 #define SETTINGS_DIRNAME	"Settings"
 #define SETTINGS_FILENAME	"settings.dat"
 #define SETTINGS_IMAGE		"saveimage.xbx"
@@ -117,6 +120,7 @@ XBSettings::XBSettings( void )
 	voiceMode = 2;
 	voiceMask = 0;
 	appearOffline = 0;
+	textureFilter = 0;
 
 #ifdef XBOX_DEMO
 	Disable();	// Ensure that we never try to load/save settings in the demo
@@ -229,9 +233,11 @@ bool XBSettings::Load( void )
 	DWORD fileSize = GetFileSize(hFile, NULL);
 	DWORD legacySettingsSize = sizeof(XBSettingsLegacy082877);
 	bool legacyLayout = fileSize == legacySettingsSize + sigSize;
+	const DWORD calibrationSettingsSize = offsetof(XBSettings, textureFilter);
+	bool calibrationLayout = fileSize == calibrationSettingsSize + sigSize;
 
-	// Verify file size. The one older supported layout is migrated below.
-	if( fileSize != (settingsSize + sigSize) && !legacyLayout )
+	// Verify file size before reading either of the two older signed layouts.
+	if( fileSize != (settingsSize + sigSize) && !legacyLayout && !calibrationLayout )
 	{
 		SettingsStatus = SETTINGS_CORRUPT;
 		CloseHandle( hFile );
@@ -279,13 +285,15 @@ bool XBSettings::Load( void )
 		voiceMode = legacy.voiceMode;
 		voiceMask = legacy.voiceMask;
 		appearOffline = legacy.appearOffline;
+		textureFilter = 0;
 		SettingsStatus = SETTINGS_OK;
 		return true;
 	}
 
 	// Temp struct to read data into:
 	XBSettings temp;
-	if( !ReadFile( hFile, &temp, settingsSize, &dwRead, NULL ) || (dwRead != settingsSize) )
+	const DWORD storedSize = calibrationLayout ? calibrationSettingsSize : settingsSize;
+	if( !ReadFile( hFile, &temp, storedSize, &dwRead, NULL ) || (dwRead != storedSize) )
 	{
 		SettingsStatus = SETTINGS_CORRUPT;
 		CloseHandle( hFile );
@@ -294,7 +302,7 @@ bool XBSettings::Load( void )
 
 	// Calculate signature over the read-in data:
 	XCALCSIG_SIGNATURE xsig;
-	if( !temp.Sign( &xsig ) )
+	if( !XBSettingsSignBytes(&temp, storedSize, &xsig) )
 	{
 		SettingsStatus = SETTINGS_CORRUPT;
 		CloseHandle( hFile );
@@ -321,16 +329,17 @@ bool XBSettings::Load( void )
 	}
 
 	// Lastly, verify that the version number is right:
-	if( temp.version != SETTINGS_VERSION )
+	if( temp.version != (calibrationLayout ? SETTINGS_VERSION_CALIBRATION : SETTINGS_VERSION) ||
+		(temp.textureFilter != 0 && temp.textureFilter != 1) )
 	{
 		SettingsStatus = SETTINGS_CORRUPT;
 		return false;
 	}
 
 	// OK. The data checks out!
+	temp.version = SETTINGS_VERSION;
 	*this = temp;
-
-	// TODO: Range-check all the values?
+	SettingsStatus = SETTINGS_OK;
 
 	return true;
 }
@@ -355,10 +364,40 @@ bool XBSettings::Missing( void )
 	return (SettingsStatus == SETTINGS_MISSING);
 }
 
+// EF bypasses the inherited splash-menu startup. Load once after Com_Init,
+// after its canonical controller defaults, without applying JA bindings or audio.
+void XBSettings::LoadEFPreferences( void )
+{
+	if (Load())
+	{
+		ApplyEFPreferences();
+		XBLog_WriteCriticalf("STEFX_SETTINGS: loaded invertY=%d filter=%d safe=%d,%d,%d,%d",
+			invertAim[0] ? 1 : 0, textureFilter, safeAreaLeft, safeAreaTop, safeAreaRight, safeAreaBottom);
+	}
+	else
+	{
+		XBLog_WriteCriticalf("STEFX_SETTINGS: load status=%d; retaining runtime defaults", (int)SettingsStatus);
+	}
+}
+
+void XBSettings::ApplyEFPreferences( void )
+{
+#if !defined(STEFX_SP_HOSTED_MP)
+	// The EF Xbox stick convention uses negative pitch for normal Y look.
+	Cvar_SetValue("m_pitch", invertAim[0] ? 0.022f : -0.022f);
+#endif
+	Cvar_Set("r_textureMode", textureFilter ? "GL_LINEAR_MIPMAP_LINEAR" : "GL_LINEAR_MIPMAP_NEAREST");
+	Cvar_SetValue("stefx_safeAreaLeft", safeAreaLeft);
+	Cvar_SetValue("stefx_safeAreaTop", safeAreaTop);
+	Cvar_SetValue("stefx_safeAreaRight", safeAreaRight);
+	Cvar_SetValue("stefx_safeAreaBottom", safeAreaBottom);
+}
+
 // Copy all stored settings into cvars
 void XBSettings::SetAll( void )
 {
 #if defined(STEFX_ELITE_FORCE_SP)
+	ApplyEFPreferences();
 	Com_Printf("STEFX: Xbox controls preserving default.cfg buttonMode=%d triggerMode=%d thumbstickMode=%d\n",
 		buttonMode[0], triggerMode[0], thumbstickMode[0]);
 #else

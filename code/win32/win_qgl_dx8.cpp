@@ -81,6 +81,17 @@ static int STEFX_SafeAreaClamp(int value, int maximum)
 
 static void STEFX_GetSafeArea(int *left, int *top, int *right, int *bottom)
 {
+#if defined(STEFX_ELITE_FORCE_SP)
+	// Calibration draws its own pending margins in physical screen coordinates.
+	// Applying the saved viewport margins as well moves the markers twice after
+	// Accept/reopen and prevents adjustment back to the physical display edges.
+	extern qboolean UI_EFMainMenu_IsCalibratingScreen(void);
+	if (UI_EFMainMenu_IsCalibratingScreen())
+	{
+		*left = *top = *right = *bottom = 0;
+		return;
+	}
+#endif
 	if (!s_stefxSafeAreaLeft)
 	{
 		s_stefxSafeAreaLeft = Cvar_Get("stefx_safeAreaLeft", "0", CVAR_ARCHIVE);
@@ -521,10 +532,13 @@ static void STEFX_WorldPackVertex(stefxWorldVertex_t &v, int i,
 }
 static stefxWorldVertex_t *STEFX_WorldArraysClaim(int count, const GLushort *indices,
     int normals, int tex0, int tex1);
+#include "../qcommon/stefx_split_perf_defaults.h"
+extern "C" __declspec(dllexport) volatile unsigned int g_SPXBSplitBuildDefaults =
+    (STEFX_HM_WORLD_DEFAULT_MODE << 16) | STEFX_SPLIT_PERF_DEFAULTS;
 static void STEFX_WorldInitCvars(void) {
     if (s_worldVertexCvar) return;
 #if defined(STEFX_SP_HOSTED_MP)
-    s_worldVertexCvar = Cvar_Get("r_efWorldVertices", "2", 0);
+    s_worldVertexCvar = Cvar_Get("r_efWorldVertices", STEFX_HM_WORLD_DEFAULT, 0);
     s_worldVerifyCvar = Cvar_Get("r_efWorldVerticesVerify", "0", 0);
 #else
     // 0: original two slabs; 1: one-slab control; 2: one slab + resident world.
@@ -6068,46 +6082,48 @@ static void dllLightf(GLenum light, GLenum pname, GLfloat param)
 	assert(0);
 }
 
-static void dllLightfv(GLenum light, GLenum pname, const GLfloat *params)
+// Both original and combined paths call this exact, out-of-line arithmetic.
+// VC71's x87 register allocation must not produce different rounded light bits.
+static __declspec(noinline) void STEFX_UpdateLightField(D3DLIGHT8 *target, GLenum pname, const GLfloat *params)
 {
 	switch(pname)
 	{
 	case GL_AMBIENT:
 		{
-			glw_state->dirLight[light].Ambient.r = params[0] / 255.0f;
-			glw_state->dirLight[light].Ambient.g = params[1] / 255.0f;
-			glw_state->dirLight[light].Ambient.b = params[2] / 255.0f;
+			target->Ambient.r = params[0] / 255.0f;
+			target->Ambient.g = params[1] / 255.0f;
+			target->Ambient.b = params[2] / 255.0f;
 		}
 		break;
 
 	case GL_DIFFUSE:
 		{
-			glw_state->dirLight[light].Diffuse.r = params[0] / 255.0f;
-			glw_state->dirLight[light].Diffuse.g = params[1] / 255.0f;
-			glw_state->dirLight[light].Diffuse.b = params[2] / 255.0f;
+			target->Diffuse.r = params[0] / 255.0f;
+			target->Diffuse.g = params[1] / 255.0f;
+			target->Diffuse.b = params[2] / 255.0f;
 		}
 		break;
 
 	case GL_SPECULAR:
 		{
-			glw_state->dirLight[light].Specular.r = params[0] / 255.0f;
-			glw_state->dirLight[light].Specular.g = params[1] / 255.0f;
-			glw_state->dirLight[light].Specular.b = params[2] / 255.0f;
+			target->Specular.r = params[0] / 255.0f;
+			target->Specular.g = params[1] / 255.0f;
+			target->Specular.b = params[2] / 255.0f;
 		}
 		break;
 	case GL_POSITION:
 		{
-			glw_state->dirLight[light].Position.x = params[0];
-			glw_state->dirLight[light].Position.y = params[1];
-			glw_state->dirLight[light].Position.z = params[2];
+			target->Position.x = params[0];
+			target->Position.y = params[1];
+			target->Position.z = params[2];
 		}
 		break;
 
 	case GL_SPOT_DIRECTION:
 		{
-			glw_state->dirLight[light].Direction.x = -params[0];
-			glw_state->dirLight[light].Direction.y = -params[1];
-			glw_state->dirLight[light].Direction.z = -params[2];
+			target->Direction.x = -params[0];
+			target->Direction.y = -params[1];
+			target->Direction.z = -params[2];
 		}
 		break;
 
@@ -6115,6 +6131,12 @@ static void dllLightfv(GLenum light, GLenum pname, const GLfloat *params)
 		assert(0);
 		break;
 	}
+
+}
+
+static void dllLightfv(GLenum light, GLenum pname, const GLfloat *params)
+{
+    STEFX_UpdateLightField(&glw_state->dirLight[light], pname, params);
 
 	// Sanity check to avoid assert in D3D?
 	if( (glw_state->dirLight[light].Direction.x * glw_state->dirLight[light].Direction.x +
@@ -6132,13 +6154,14 @@ static void dllLightfv(GLenum light, GLenum pname, const GLfloat *params)
 		glw_state->device->LightEnable(1, false);
 }
 
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
-// Co-op only. Complete one light before submitting it; never cache device state
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+// Split views only. Complete one light before submitting it; never cache device state
 // across draws, views, state blocks or device resets.
 // mode, requests, original SetLight calls, combined SetLight calls, restores,
 // verified, mismatches, API failures, failure latch, sampled cycles/calls/max,
 // avoided SetLight/LightEnable calls, reserved, reserved.
 extern "C" volatile unsigned int g_SPXBCoopLight[16]={0};
+extern "C" volatile unsigned int g_SPXBCoopLightMismatch[64]={0};
 static bool s_coopLightFailed;
 
 // STEFX_COOP_DIFFUSE_LIGHT_BEGIN
@@ -6154,18 +6177,12 @@ static void STEFX_CoopOriginalLight(trRefEntity_t *ent) {
 
 static bool STEFX_CoopCombinedLight(trRefEntity_t *ent) {
 	D3DLIGHT8 &light=glw_state->dirLight[0];
-	light.Ambient.r=ent->ambientLight[0]/255.0f;
-	light.Ambient.g=ent->ambientLight[1]/255.0f;
-	light.Ambient.b=ent->ambientLight[2]/255.0f;
-	light.Diffuse.r=ent->directedLight[0]/255.0f;
-	light.Diffuse.g=ent->directedLight[1]/255.0f;
-	light.Diffuse.b=ent->directedLight[2]/255.0f;
+    STEFX_UpdateLightField(&light, GL_AMBIENT, ent->ambientLight);
+    STEFX_UpdateLightField(&light, GL_DIFFUSE, ent->directedLight);
 	if (VectorLengthSquared(ent->lightDir)<=0.0001f) {
 		ent->lightDir[0]=0.0f; ent->lightDir[1]=1.0f; ent->lightDir[2]=0.0f;
 	}
-	light.Direction.x=-ent->lightDir[0];
-	light.Direction.y=-ent->lightDir[1];
-	light.Direction.z=-ent->lightDir[2];
+    STEFX_UpdateLightField(&light, GL_SPOT_DIRECTION, ent->lightDir);
 	if (light.Direction.x*light.Direction.x+light.Direction.y*light.Direction.y+
 		light.Direction.z*light.Direction.z<=0) light.Direction.x=1.0f;
 	++g_SPXBCoopLight[3];
@@ -6179,14 +6196,23 @@ bool STEFX_CoopDiffuseLight(trRefEntity_t *ent) {
 	static cvar_t *mode,*split,*players,*game;
 	static unsigned int loggedModes;
 	if (!mode) {
-		mode=Cvar_Get("r_efCoopLight","0",0);
+#if defined(STEFX_SP_HOSTED_MP)
+        mode=Cvar_Get("r_efHmLight",STEFX_SPLIT_LIGHT_DEFAULT,0);
+#else
+        mode=Cvar_Get("r_efCoopLight",STEFX_SPLIT_LIGHT_DEFAULT,0);
+#endif
 		split=Cvar_Get("stefx_splitScreen","0",0);
 		players=Cvar_Get("stefx_splitScreenPlayers","1",0);
 		game=Cvar_Get("stefx_splitScreenMode","coop",0);
 	}
+#if defined(STEFX_SP_HOSTED_MP)
+    const char *expectedGame="holomatch";
+#else
+    const char *expectedGame="coop";
+#endif
 	int selected=mode->integer;
 	if (!ent || !glw_state || !glw_state->device || s_coopLightFailed ||
-		!split->integer || players->integer<2 || Q_stricmp(game->string,"coop") ||
+		!split->integer || players->integer<2 || Q_stricmp(game->string,expectedGame) ||
 		!backEnd.viewParms.stefxSplitView || backEnd.projection2D || selected<1 || selected>3)
 		selected=0;
 #if !defined(STEFX_HW_FRAME_DIAGNOSTICS)
@@ -6218,7 +6244,11 @@ bool STEFX_CoopDiffuseLight(trRefEntity_t *ent) {
 		const D3DLIGHT8 before=glw_state->dirLight[0];
 		STEFX_CoopOriginalLight(ent);
 		const D3DLIGHT8 originalCpu=glw_state->dirLight[0];
-		D3DLIGHT8 originalDevice,combinedDevice;
+        // GetLight need not overwrite irrelevant/reserved bytes. Equal initial
+        // storage prevents uninitialized stack data from becoming a mismatch.
+        D3DLIGHT8 originalDevice,combinedDevice;
+        memset(&originalDevice,0,sizeof(originalDevice));
+        memset(&combinedDevice,0,sizeof(combinedDevice));
 		BOOL original0=FALSE,original1=TRUE,combined0=FALSE,combined1=TRUE;
 		bool ok=SUCCEEDED(glw_state->device->GetLight(0,&originalDevice));
 		ok=SUCCEEDED(glw_state->device->GetLightEnable(0,&original0)) && ok;
@@ -6234,7 +6264,35 @@ bool STEFX_CoopDiffuseLight(trRefEntity_t *ent) {
 				if (memcmp(&originalCpu,&glw_state->dirLight[0],sizeof(originalCpu)) ||
 					memcmp(&originalDevice,&combinedDevice,sizeof(originalDevice)) ||
 					original0!=combined0 || original1!=combined1) {
-					++g_SPXBCoopLight[6]; failed=true;
+                    ++g_SPXBCoopLight[6]; failed=true;
+                    unsigned int firstCpu=~0u, firstDevice=~0u;
+                    const unsigned int *cpuA=(const unsigned int*)&originalCpu;
+                    const unsigned int *cpuB=(const unsigned int*)&glw_state->dirLight[0];
+                    const unsigned int *devA=(const unsigned int*)&originalDevice;
+                    const unsigned int *devB=(const unsigned int*)&combinedDevice;
+                    for (unsigned int word=0; word<sizeof(D3DLIGHT8)/4; ++word) {
+                        if (firstCpu==~0u && cpuA[word]!=cpuB[word]) firstCpu=word;
+                        if (firstDevice==~0u && devA[word]!=devB[word]) firstDevice=word;
+                        if (word<26) {
+                            g_SPXBCoopLightMismatch[12+word]=devA[word];
+                            g_SPXBCoopLightMismatch[38+word]=devB[word];
+                        }
+                    }
+                    g_SPXBCoopLightMismatch[1]=firstCpu;
+                    g_SPXBCoopLightMismatch[2]=firstCpu==~0u?0:cpuA[firstCpu];
+                    g_SPXBCoopLightMismatch[3]=firstCpu==~0u?0:cpuB[firstCpu];
+                    g_SPXBCoopLightMismatch[4]=firstDevice;
+                    g_SPXBCoopLightMismatch[5]=firstDevice==~0u?0:devA[firstDevice];
+                    g_SPXBCoopLightMismatch[6]=firstDevice==~0u?0:devB[firstDevice];
+                    g_SPXBCoopLightMismatch[7]=original0;
+                    g_SPXBCoopLightMismatch[8]=combined0;
+                    g_SPXBCoopLightMismatch[9]=original1;
+                    g_SPXBCoopLightMismatch[10]=combined1;
+                    g_SPXBCoopLightMismatch[0]=1;
+                    XBLog_WriteCriticalf("STEFX_COOP_LIGHT: first mismatch cpuWord=%u %08x/%08x deviceWord=%u %08x/%08x enable=%d/%d,%d/%d",
+                        firstCpu,g_SPXBCoopLightMismatch[2],g_SPXBCoopLightMismatch[3],
+                        firstDevice,g_SPXBCoopLightMismatch[5],g_SPXBCoopLightMismatch[6],
+                        original0,combined0,original1,combined1);
 				}
 			}
 			// A diagnostic always renders the original state, even on mismatch.

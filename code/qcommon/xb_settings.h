@@ -60,6 +60,9 @@ struct XBSettings
 	int voiceMask;
 	int appearOffline;
 
+	// Appended so the signed 082901 settings prefix remains migratable.
+	int textureFilter; // 0 = bilinear, 1 = trilinear
+
 // INTERFACE:
 
 	XBSettings( void );
@@ -74,6 +77,8 @@ struct XBSettings
 
 	// This copies all settings from the Settings struct to their various cvars
 	void SetAll( void );
+	void ApplyEFPreferences( void );
+	void LoadEFPreferences( void );
 
 	// Turn off the settings file completely:
 	void Disable( void );

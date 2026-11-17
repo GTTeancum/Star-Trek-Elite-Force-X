@@ -49,6 +49,7 @@ static int s_stefxHolomatchSplitStateSample = 0;
 static unsigned int s_stefxHolomatchVirtualSourceLogMask = 0;
 static vec3_t s_stefxHolomatchVirtualAngles[4];
 static qboolean s_stefxHolomatchVirtualAnglesValid[4];
+static int s_stefxHolomatchVirtualTime[4];
 static int s_stefxHolomatchVirtualAvoidUntil[4];
 static int s_stefxHolomatchVirtualAvoidTurn[4];
 static int s_stefxHolomatchVirtualAvoidLogBudget = 32;
@@ -912,7 +913,8 @@ static qboolean STEFX_HolomatchBuildLocalUsercmd(int clientNum, int levelTime, u
 	float proofAimFraction = 0.0f;
 	float padZoomFov = 90.0f;
 	int virtualHazard;
-	qboolean forceVirtualP1;
+	qboolean forceVirtualP1, forceVirtualSlot;
+	int virtualMsec;
 
 	memset(cmd, 0, sizeof(*cmd));
 	cmd->serverTime = levelTime;
@@ -927,6 +929,9 @@ static qboolean STEFX_HolomatchBuildLocalUsercmd(int clientNum, int levelTime, u
 	forceVirtualP1 = (qboolean)(clientNum == 0 &&
 		Cvar_VariableIntegerValue("stefx_hm_split_virtual_controls") &&
 		Cvar_VariableIntegerValue("stefx_hm_split_virtual_controls_p1"));
+    forceVirtualSlot = (qboolean)(forceVirtualP1 || (clientNum > 0 &&
+        Cvar_VariableIntegerValue("stefx_console_qualification") == 1 &&
+        Cvar_VariableIntegerValue("stefx_hm_split_virtual_controls")));
 	if (player && !s_stefxHolomatchVirtualAnglesValid[clientNum])
 	{
 		VectorCopy(player->viewangles, s_stefxHolomatchVirtualAngles[clientNum]);
@@ -935,7 +940,7 @@ static qboolean STEFX_HolomatchBuildLocalUsercmd(int clientNum, int levelTime, u
 	selectedWeapon = STEFX_HolomatchAutoswitchWeapon(clientNum, player, 0);
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-	if (!forceVirtualP1 && player && CL_STEFX_SplitScreen_BuildHolomatchUsercmd(clientNum,
+	if (!forceVirtualSlot && player && CL_STEFX_SplitScreen_BuildHolomatchUsercmd(clientNum,
 		cmd,
 		player->viewangles,
 		player->delta_angles,
@@ -985,7 +990,14 @@ static qboolean STEFX_HolomatchBuildLocalUsercmd(int clientNum, int levelTime, u
 	phase = (float)((levelTime + clientNum * 731) % 5000) / 5000.0f;
 	yawRate = (clientNum == 0 || clientNum == 2) ? -1.0f : 1.0f;
 	s_stefxHolomatchVirtualAngles[clientNum][PITCH] = 0.0f;
-	s_stefxHolomatchVirtualAngles[clientNum][YAW] += yawRate * (0.55f + 0.20f * (clientNum + 1));
+    // Diagnostic motion is measured in degrees per game second, independent
+    // of frame rate and repeated same-time local-command requests.
+    virtualMsec = levelTime - s_stefxHolomatchVirtualTime[clientNum];
+    if (!s_stefxHolomatchVirtualTime[clientNum] || virtualMsec < 0) virtualMsec = 0;
+    if (virtualMsec > 100) virtualMsec = 100;
+    s_stefxHolomatchVirtualTime[clientNum] = levelTime;
+    s_stefxHolomatchVirtualAngles[clientNum][YAW] +=
+        yawRate * (0.55f + 0.20f * (clientNum + 1)) * (virtualMsec * 0.060f);
 	s_stefxHolomatchVirtualAngles[clientNum][ROLL] = 0.0f;
 
 	if (s_stefxHolomatchVirtualAngles[clientNum][YAW] > 360.0f)
@@ -1738,6 +1750,7 @@ void STEFX_HolomatchHostAfterGameInit(const char *mapname)
 	s_stefxHolomatchSmokeMapQueued = qfalse;
 	memset(s_stefxHolomatchVirtualAngles, 0, sizeof(s_stefxHolomatchVirtualAngles));
 	memset(s_stefxHolomatchVirtualAnglesValid, 0, sizeof(s_stefxHolomatchVirtualAnglesValid));
+	memset(s_stefxHolomatchVirtualTime, 0, sizeof(s_stefxHolomatchVirtualTime));
 	memset(s_stefxHolomatchVirtualAvoidUntil, 0, sizeof(s_stefxHolomatchVirtualAvoidUntil));
 	memset(s_stefxHolomatchVirtualAvoidTurn, 0, sizeof(s_stefxHolomatchVirtualAvoidTurn));
 	s_stefxHolomatchVirtualAvoidLogBudget = 32;

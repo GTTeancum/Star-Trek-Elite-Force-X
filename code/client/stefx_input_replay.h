@@ -7,6 +7,7 @@ static void STEFX_ApplyInputReplay(usercmd_t *cmd, const vec3_t initialAngles)
 	static int count = 0, checked = 0, base = -1, previous = -1, lastRow = -2;
 	static char map[64];
 	extern bool in_camera;
+	extern qboolean player_locked;
 	if (!cmd || cls.state != CA_ACTIVE) return;
 	if (!checked)
 	{
@@ -54,7 +55,7 @@ static void STEFX_ApplyInputReplay(usercmd_t *cmd, const vec3_t initialAngles)
 	const int elapsed = now - base;
 	if (elapsed >= rows[count - 1].end)
 	{ count = 0; XBL("STEFX_INPUT_REPLAY: complete"); return; }
-	if (in_camera) return;
+	if (in_camera || player_locked) return;
 	int selected = -1;
 	for (int i = 0; i < count; ++i)
 		if (elapsed >= rows[i].start && elapsed < rows[i].end) { selected = i; break; }
@@ -67,6 +68,13 @@ static void STEFX_ApplyInputReplay(usercmd_t *cmd, const vec3_t initialAngles)
 		const Row &row = rows[selected];
 		cmd->forwardmove = row.forward; cmd->rightmove = row.right; cmd->upmove = row.up;
 		cmd->buttons = row.buttons;
+        if (Cvar_VariableIntegerValue("stefx_console_qualification") == 1) {
+            // EF's original phaser/compression IDs; request only owned weapons.
+            // Hold the request through the normal weapon-switch delay. No ammo,
+            // inventory or script state is supplied by this input fixture.
+            const int weapon = ((elapsed / 8000) & 1) ? 1 : 2;
+            if (cl.frame.ps.stats[STAT_WEAPONS] & (1 << weapon)) cmd->weapon = weapon;
+        }
 		cl.viewangles[PITCH] += row.pitch * (delta * 0.001f);
 		cl.viewangles[YAW] += row.yaw * (delta * 0.001f);
 	}

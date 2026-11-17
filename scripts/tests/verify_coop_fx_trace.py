@@ -16,7 +16,7 @@ for path in ['SP-Mod-Source-Code-master/game/surfaceflags.h','code/game/surfacef
 
 body=src[src.index('static\tint\t\t\tcg_numSolidEntities;'):src.index('/*\n================\nCG_PointContents')]
 body=re.sub(r'^#include .*\n','',body,flags=re.M)
-bounds=(root/'SP-Mod-Source-Code-master/cgame/stefx_fx_trace_bounds.h').read_text()
+bounds=(root/'code/qcommon/stefx_split_perf_defaults.h').read_text(encoding='utf-8')+(root/'SP-Mod-Source-Code-master/cgame/stefx_fx_trace_bounds.h').read_text(encoding='utf-8')
 prefix=r'''
 #include <assert.h>
 #include <stdio.h>
@@ -24,6 +24,7 @@ prefix=r'''
 #include <string.h>
 #include <math.h>
 #define _XBOX 1
+#define STEFX_HW_FRAME_DIAGNOSTICS 1
 #define STEFX_ELITE_FORCE_SP 1
 #define MAX_ENTITIES_IN_SNAPSHOT 64
 #define ENTITYNUM_WORLD 62
@@ -57,6 +58,7 @@ void cgi_Cvar_Update(vmCvar_t*){}
 unsigned __int64 STEFX_XboxReadTsc(){return 0;}
 unsigned int STEFX_XboxElapsedCycles(unsigned __int64){return 1;}
 int logs;extern "C" void XBLog_WriteCritical(const char*){++logs;}
+extern "C" void XBLog_WriteCriticalf(const char*,...){}
 vec3_t modelMins[64],modelMaxs[64];int modelContents[64],calls,forceHit=-1;
 clipHandle_t cgi_CM_InlineModel(int i){return i;}
 clipHandle_t cgi_CM_TempBoxModel(const float*a,const float*b){VectorCopy(a,modelMins[63]);VectorCopy(b,modelMaxs[63]);modelContents[63]=CONTENTS_BODY;return 63;}

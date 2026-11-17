@@ -2,7 +2,8 @@
 from pathlib import Path
 import subprocess
 root=Path(__file__).resolve().parents[2];out=root/'build/research/letterbox_perf'
-helper=(root/'code/renderer/retail_xbox/stefx_coop_model_pvs.h').read_text()
+helper=(root/'code/renderer/retail_xbox/stefx_coop_model_pvs.h').read_text(encoding='utf-8').replace('#include "../../qcommon/stefx_split_perf_defaults.h"', '')
+defaults=(root/'code/qcommon/stefx_split_perf_defaults.h').read_text(encoding='utf-8')
 prefix=r"""
 #include <assert.h>
 #include <stdio.h>
@@ -68,7 +69,7 @@ int main(){
  puts("Co-op model PVS: transformed whole bounds, frame union/cache rotation, partition grazing, malformed trees, unsupported state and observe mode passed.");
 }
 """
-cpp=out/'coop_model_pvs_test.cpp';exe=out/'coop_model_pvs_test.exe';cpp.write_text(prefix+helper+suffix)
+cpp=out/'coop_model_pvs_test.cpp';exe=out/'coop_model_pvs_test.exe';cpp.write_text(prefix+defaults+helper+suffix)
 vc=Path('C:/Program Files (x86)/Microsoft Visual Studio 8/VC')
 subprocess.run(['C:/XDK_5558/XDK/xbox/bin/vc71/CL.Exe','/nologo','/MT','/EHsc','/I'+str(vc/'include'),str(cpp),'/Fo'+str(out/'coop_model_pvs_test.obj'),'/Fe'+str(exe),'/link','/LIBPATH:'+str(vc/'lib'),'/LIBPATH:'+str(vc/'PlatformSDK/Lib')],check=True)
 subprocess.run([str(exe)],check=True)

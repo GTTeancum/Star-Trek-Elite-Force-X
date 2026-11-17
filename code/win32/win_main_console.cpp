@@ -1566,6 +1566,10 @@ int main(int argc, char* argv[])
 #endif
 	XBL("Com_Init done\n");
 
+#if defined(STEFX_ELITE_FORCE_SP)
+	Settings.LoadEFPreferences();
+#endif
+
 #if defined(STEFX_SP_HOSTED_MP)
 	XBL("G_AllocGentities skipped; official Holomatch game owns entity storage\n");
 #else

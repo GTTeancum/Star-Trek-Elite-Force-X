@@ -3,15 +3,19 @@
 
 #include "../tr_local.h"
 #include "retail_renderer_contract.h"
+#if defined(STEFX_PVS_DIAGNOSTICS)
 #include "pvs_probe_bounds.h"
+#endif
 
 #ifdef _XBOX
 #include "../../win32/xb_log.h"
 extern "C" volatile unsigned int g_SPXBSplitSlotActive;
 extern "C" __declspec(dllexport) volatile unsigned int g_SPXBHMPvsProbe[296] = { 0 };
+#if defined(STEFX_PVS_DIAGNOSTICS)
 static bool s_stefxHMPvsProbeWorldWalk = false;
 #define STEFX_HM_PVS_PROBE_SEEN_BASE 72
 #define STEFX_HM_PVS_PROBE_ADDED_BASE (STEFX_HM_PVS_PROBE_SEEN_BASE + STEFX_HM_PVS_PROBE_SURFACE_WORDS)
+#endif
 #endif
 
 #ifdef _XBOX
@@ -20,6 +24,10 @@ static bool lookingForWorstLeaf = false;
 #endif
 
 STEFX_RETAIL_NAMESPACE_BEGIN
+
+#ifdef _XBOX
+#include "stefx_split_visibility.h"
+#endif
 
 #ifndef _XBOX
 inline void Q_CastShort2Float(float *f, const short *s)
@@ -414,7 +422,7 @@ R_AddWorldSurface
 */
 static void R_AddWorldSurface( msurface_t *surf, int dlightBits, qboolean noViewCount = qfalse )
 {
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 	int stefxProbeSurfaceIndex = -1;
 	unsigned int stefxProbeSurfaceMask = 0;
 	volatile unsigned int *stefxProbeSeenWord = NULL;
@@ -447,7 +455,7 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits, qboolean noView
 	{
 		if ( surf->viewCount == tr.viewCount ) 
 		{
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 			if (stefxProbeSurfaceIndex >= 0)
 			{
 				g_SPXBHMPvsProbe[56]++;
@@ -489,7 +497,7 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits, qboolean noView
 	if (R_CullSurface(surf->data, surf->shader))
 #endif
 	{
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 		if (stefxProbeSurfaceIndex >= 0)
 		{
 			g_SPXBHMPvsProbe[54]++;
@@ -594,7 +602,7 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits, qboolean noView
 #endif
 	{
 		R_AddDrawSurf( surf->data, surf->shader, surf->fogIndex, dlightBits );
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 		if (stefxProbeSurfaceIndex >= 0)
 		{
 			g_SPXBHMPvsProbe[
@@ -1550,7 +1558,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 	{
 		int			newDlights[2];
 
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 		if (s_stefxHMPvsProbeWorldWalk)
 		{
 			g_SPXBHMPvsProbe[47]++;
@@ -1567,7 +1575,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 		// if the node wasn't marked as potentially visible, exit
 		if (node->visframe != tr.visCount)
 		{
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 			if (s_stefxHMPvsProbeWorldWalk)
 			{
 				g_SPXBHMPvsProbe[48]++;
@@ -1590,7 +1598,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 			if ( planeBits & 1 ) {
 				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[0]);
 				if (r == 2) {
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 					if (s_stefxHMPvsProbeWorldWalk) g_SPXBHMPvsProbe[49]++;
 #endif
 					return;						// culled
@@ -1603,7 +1611,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 			if ( planeBits & 2 ) {
 				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[1]);
 				if (r == 2) {
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 					if (s_stefxHMPvsProbeWorldWalk) g_SPXBHMPvsProbe[49]++;
 #endif
 					return;						// culled
@@ -1616,7 +1624,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 			if ( planeBits & 4 ) {
 				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[2]);
 				if (r == 2) {
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 					if (s_stefxHMPvsProbeWorldWalk) g_SPXBHMPvsProbe[49]++;
 #endif
 					return;						// culled
@@ -1629,7 +1637,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 			if ( planeBits & 8 ) {
 				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[3]);
 				if (r == 2) {
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 					if (s_stefxHMPvsProbeWorldWalk) g_SPXBHMPvsProbe[49]++;
 #endif
 					return;						// culled
@@ -1645,7 +1653,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 			break;
 		}
 
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 		if (s_stefxHMPvsProbeWorldWalk)
 		{
 			g_SPXBHMPvsProbe[50]++;
@@ -1704,7 +1712,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 		mleaf_s *leaf;
 
 		tr.pc.c_leafs++;
-#ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 		if (s_stefxHMPvsProbeWorldWalk)
 		{
 			g_SPXBHMPvsProbe[51]++;
@@ -1846,6 +1854,7 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 	int		cluster;
 	int		stefxIgnorePvs;
 	int		stefxIgnoreAreaMask;
+#if defined(STEFX_PVS_DIAGNOSTICS)
 	unsigned int stefxProbeSerial;
 	unsigned int stefxProbeHash;
 	unsigned int stefxProbeBits;
@@ -1858,12 +1867,14 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 	int stefxProbeBit;
 	int stefxProbeWordIndex;
 	qboolean stefxProbePrimary;
+#endif
 	static int stefxLastIgnorePvs = -1;
 	static int stefxLastIgnoreAreaMask = -1;
 
 	// lockpvs lets designers walk around to determine the
 	// extent of the current pvs
 	if ( r_lockpvs->integer ) {
+		R_STEFX_ResetVisibilityReuse();
 		return;
 	}
 
@@ -1876,14 +1887,17 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 	cluster = leaf->cluster;
 	stefxIgnorePvs = Cvar_VariableIntegerValue("stefx_hm_smoke_ignore_pvs");
 	stefxIgnoreAreaMask = Cvar_VariableIntegerValue("stefx_hm_smoke_ignore_areamask");
+#if defined(STEFX_PVS_DIAGNOSTICS)
 	stefxProbePrimary = !tr.viewParms.isPortal;
+#endif
 
 	assert(leaf->contents != -1);
 
 	// if the cluster is the same and the area visibility matrix
 	// hasn't changed, we don't need to mark everything again
 
-	if ( tr.viewCluster == cluster && !tr.refdef.areamaskModified &&
+	if (STEFX_ReuseSplitVisibility(cluster, stefxIgnorePvs, stefxIgnoreAreaMask)) return;
+	if ( !g_SPXBSplitVisibility[0] && tr.viewCluster == cluster && !tr.refdef.areamaskModified &&
 		 stefxIgnorePvs == stefxLastIgnorePvs &&
 		 stefxIgnoreAreaMask == stefxLastIgnoreAreaMask ) {
 		return;
@@ -1900,11 +1914,13 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 				tr.world->nodes[i].visframe = tr.visCount;
 			}
 		}
+		STEFX_RecordSplitVisibility(tr.viewCluster, stefxIgnorePvs, stefxIgnoreAreaMask);
 		return;
 	}
 
 	vis = R_ClusterPVS (tr.viewCluster);
 
+#if defined(STEFX_PVS_DIAGNOSTICS)
 	stefxProbeSerial = g_SPXBHMPvsProbe[0];
 	if (stefxProbePrimary) {
 		stefxProbeSerial++;
@@ -1951,17 +1967,22 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 	stefxProbePvsRejected = 0;
 	stefxProbeAreaRejected = 0;
 	stefxProbeInvalid = 0;
+#endif
 	
 	for (i=0,leaf=tr.world->leafs ; i<tr.world->numleafs ; i++, leaf++) {
 		cluster = leaf->cluster;
 		if ( cluster < 0 || cluster >= tr.world->numClusters ) {
+#if defined(STEFX_PVS_DIAGNOSTICS)
 			stefxProbeInvalid++;
+#endif
 			continue;
 		}
 
 		// check general pvs
 		if ( !stefxIgnorePvs && !(vis[cluster>>3] & (1<<(cluster&7))) ) {
+#if defined(STEFX_PVS_DIAGNOSTICS)
 			stefxProbePvsRejected++;
+#endif
 			continue;
 		}
 
@@ -1970,10 +1991,14 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 			   !stefxIgnoreAreaMask &&
 			   leaf->area >= 0 &&
 			   (tr.refdef.areamask[leaf->area>>3] & (1<<(leaf->area&7)) ) ) {
+#if defined(STEFX_PVS_DIAGNOSTICS)
 			stefxProbeAreaRejected++;
+#endif
 			continue;		// not visible
 		}
+#if defined(STEFX_PVS_DIAGNOSTICS)
 		stefxProbeMarked++;
+#endif
 
 		parent = (mnode_t*)leaf;
 		assert(leaf->contents != -1);
@@ -1984,6 +2009,8 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 			parent = parent->parent;
 		} while (parent);
 	}
+	STEFX_RecordSplitVisibility(tr.viewCluster, stefxIgnorePvs, stefxIgnoreAreaMask);
+#if defined(STEFX_PVS_DIAGNOSTICS)
 	if (!stefxProbePrimary) {
 		return;
 	}
@@ -2040,6 +2067,7 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 	g_SPXBHMPvsProbe[10] = stefxProbeAreaRejected;
 	g_SPXBHMPvsProbe[11] = stefxProbeInvalid;
 	g_SPXBHMPvsProbe[0] = stefxProbeSerial + 1;
+#endif
 }
 #else // _XBOX
 
@@ -2123,9 +2151,11 @@ R_AddWorldSurfaces
 */
 #ifdef _XBOX
 void R_AddWorldSurfaces (void) {
+#if defined(STEFX_PVS_DIAGNOSTICS)
 	int stefxProbeWordIndex;
 	int stefxProbeFirstDrawSurf;
 	qboolean stefxProbePrimary;
+#endif
 	if ( !r_drawworld->integer ) {
 		return;
 	}
@@ -2145,6 +2175,7 @@ void R_AddWorldSurfaces (void) {
 		tr.refdef.num_dlights = MAX_DLIGHTS ;
 	}
 
+#if defined(STEFX_PVS_DIAGNOSTICS)
 	stefxProbePrimary = !tr.viewParms.isPortal;
 	if (stefxProbePrimary) {
 		for (stefxProbeWordIndex = 47; stefxProbeWordIndex < 296; stefxProbeWordIndex++) {
@@ -2165,7 +2196,9 @@ void R_AddWorldSurfaces (void) {
 				tr.world->numsurfaces, STEFX_HM_PVS_PROBE_SURFACE_WORDS * 32);
 		}
 	}
+#endif
 	R_RecursiveWorldNode( tr.world->nodes, 15, ( 1 << tr.refdef.num_dlights ) - 1 );
+#if defined(STEFX_PVS_DIAGNOSTICS)
 	s_stefxHMPvsProbeWorldWalk = false;
 	if (stefxProbePrimary) {
 		g_SPXBHMPvsProbe[57] = (unsigned int)(tr.refdef.numDrawSurfs - stefxProbeFirstDrawSurf);
@@ -2178,6 +2211,7 @@ void R_AddWorldSurfaces (void) {
 		g_SPXBHMPvsProbe[64] = (unsigned int)tr.world->nodes[0].visframe;
 		g_SPXBHMPvsProbe[65] = (unsigned int)tr.visCount;
 	}
+#endif
 }
 
 #else // _XBOX

@@ -3,6 +3,8 @@
     [ValidateSet("sp", "spmp", "mp", "all")]
     [string]$Target,
 
+    [string]$BinkLibrary,
+
     [switch]$Clean,
 
     [switch]$SkipAssets,
@@ -11,7 +13,15 @@
 
     [switch]$ReuseObjects,
 
-    [switch]$FrameDiagnostics
+    [switch]$FrameDiagnostics,
+
+    [switch]$PvsDiagnostics,
+
+    [ValidateRange(0, 15)]
+    [int]$SplitPerformanceDefaults = 0,
+
+    [ValidateRange(0, 2)]
+    [int]$HolomatchWorldMode = 2
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +30,17 @@ Set-StrictMode -Version 2.0
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $repoReleaseDir = Join-Path $repoRoot "build\release"
 $binkLibDir = Join-Path (Split-Path (Split-Path $repoRoot -Parent) -Parent) "RM4+JadeSrc\Libraries\GX8\bink"
+if ($BinkLibrary) {
+    $BinkLibrary = [System.IO.Path]::GetFullPath($BinkLibrary)
+    if ([System.IO.Path]::GetFileName($BinkLibrary) -ine 'binkxbox.lib') {
+        throw "BinkLibrary must point to the Xbox binkxbox.lib file"
+    }
+    $binkLibDir = Split-Path $BinkLibrary -Parent
+}
+$binkLibraryPath = Join-Path $binkLibDir 'binkxbox.lib'
+if (-not (Test-Path -LiteralPath $binkLibraryPath -PathType Leaf)) {
+    throw "Required Bink library not found: $binkLibraryPath. Supply its installed path with -BinkLibrary."
+}
 $xdkRoot = "C:\XDK_5558\XDK"
 $vc71Dir = Join-Path $xdkRoot "xbox\bin\vc71"
 $xdkBin = Join-Path $xdkRoot "xbox\bin"
@@ -1557,6 +1578,19 @@ function Build-Project {
 
         foreach ($flag in $baseFlags) {
             $compileFlags.Add($flag)
+        }
+
+        # Scope optional comparison/default flags to their consuming objects.
+        # Changing the world mode must not rebuild unrelated gameplay code.
+        $sourceLeaf = [System.IO.Path]::GetFileName($source.FullPath)
+        if ($PvsDiagnostics -and $sourceLeaf -in @('tr_world_retail.cpp', 'tr_main_retail.cpp')) {
+            $compileFlags.Add('/DSTEFX_PVS_DIAGNOSTICS')
+        }
+        if ($SplitPerformanceDefaults -ne 0 -and $sourceLeaf -in @('cg_predict.cpp', 'tr_world_retail.cpp', 'tr_main_retail.cpp', 'win_qgl_dx8.cpp')) {
+            $compileFlags.Add("/DSTEFX_SPLIT_PERF_DEFAULTS=$SplitPerformanceDefaults")
+        }
+        if ($HolomatchWorldMode -ne 2 -and $sourceLeaf -eq 'win_qgl_dx8.cpp') {
+            $compileFlags.Add("/DSTEFX_HM_WORLD_DEFAULT_MODE=$HolomatchWorldMode")
         }
 
         $seenDefines = @{}

@@ -1,5 +1,6 @@
-// Co-op model visibility experiment. Included after tr in the active renderer.
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#include "../../qcommon/stefx_split_perf_defaults.h"
+// Per-view split-screen model visibility. Included after tr in the active renderer.
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 extern "C" volatile unsigned int g_SPXBCoopModelPvs[8] = {0};
 static bool s_coopModelOutsidePvs = false;
 static cvar_t *s_coopModelPvsMode;
@@ -87,9 +88,13 @@ static bool STEFX_CoopModelBounds(const model_t *model, const refEntity_t &e, fl
     return any && STEFX_CoopWorldBounds(local, e, model->type == MOD_MDR, bounds);
 }
 static bool STEFX_CoopModelOutsidePvs(const trRefEntity_t *entity, const model_t *model) {
-    if (!s_coopModelPvsMode) s_coopModelPvsMode = Cvar_Get("r_efCoopModelPvs", "0", 0);
+    #if defined(STEFX_SP_HOSTED_MP)
+    if (!s_coopModelPvsMode) s_coopModelPvsMode = Cvar_Get("r_efHmModelPvs", STEFX_SPLIT_MODEL_DEFAULT, 0);
+#else
+    if (!s_coopModelPvsMode) s_coopModelPvsMode = Cvar_Get("r_efCoopModelPvs", STEFX_SPLIT_MODEL_DEFAULT, 0);
+#endif
     g_SPXBCoopModelPvs[0] = s_coopModelPvsMode->integer;
-    if (!s_coopModelPvsMode->integer || !tr.viewParms.stefxSplitView || tr.viewParms.isPortal ||
+    if ((s_coopModelPvsMode->integer != 1 && s_coopModelPvsMode->integer != 2) || !tr.viewParms.stefxSplitView || tr.viewParms.isPortal ||
         !model || (model->type != MOD_MESH && model->type != MOD_MDR) ||
         !tr.world || !tr.world->nodes || !tr.world->planes || tr.world->numplanes <= 0 || tr.viewCluster < 0 ||
         tr.world->nodes[0].visframe != tr.visCount || !r_drawworld->integer ||

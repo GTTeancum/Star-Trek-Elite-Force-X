@@ -2500,6 +2500,8 @@ G_RunFrame
 Advances the non-player objects in the world
 ================
 */
+#include "../../code/qcommon/stefx_console_workload.h"
+
 void G_RunFrame( int levelTime ) {
 	int			i;
 	gentity_t	*ent;
@@ -2944,6 +2946,7 @@ void G_RunFrame( int levelTime ) {
 	g_SPXBPerfGameThinkDue = xboxThinkDue;
 	g_SPXBPerfGameScripted = xboxScripted;
 	g_SPXBPerfGameOther = xboxOther;
+	G_STEFX_PublishConsoleWorkload();
 #endif
 }
 

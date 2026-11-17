@@ -151,12 +151,11 @@ enum {
 };
 
 enum {
-	EF_VIDEO_TITLE,
-	EF_VIDEO_CORNER_TL,
+	EF_VIDEO_CORNER_TL = 0,
 	EF_VIDEO_CORNER_TR,
 	EF_VIDEO_CORNER_BL,
 	EF_VIDEO_CORNER_BR,
-	EF_VIDEO_INSTRUCTIONS
+	EF_VIDEO_CORNER_COUNT
 };
 
 enum {
@@ -346,6 +345,8 @@ static int s_videoOriginalLeft = 0;
 static int s_videoOriginalTop = 0;
 static int s_videoOriginalRight = 0;
 static int s_videoOriginalBottom = 0;
+static qboolean s_videoTrilinear = qfalse;
+static qboolean s_controllerInvertY = qfalse;
 static char s_menuSmokeTarget[32];
 static int s_menuSmokeStage = 0;
 static int s_menuSmokeNextRealtime = 0;
@@ -1518,6 +1519,8 @@ static void EFFe_DrawSavePrompt(void)
 
 static void EFFe_DrawVideoPrompt(void)
 {
+	EFFe_DrawPs2PromptIcon(570.0f, 530.0f, s_assets.xboxWhite);
+	EFFe_DrawPromptLabel(645.0f, 542.0f, s_videoTrilinear ? "Filtering: Trilinear" : "Filtering: Bilinear");
 	EFFe_DrawPs2PromptIcon(775.0f, 610.0f, s_assets.xboxX);
 	EFFe_DrawPromptLabel(850.0f, 622.0f, "Switch Corners");
 	EFFe_DrawPs2PromptIcon(570.0f, 690.0f, s_assets.xboxB);
@@ -2611,7 +2614,7 @@ static void EFFe_DrawVideoScreen(void)
 	float top;
 	float right;
 	float bottom;
-	const float *cornerColors[4];
+	const float *cornerColors[EF_VIDEO_CORNER_COUNT];
 	int i;
 	qboolean bright;
 
@@ -2620,7 +2623,7 @@ static void EFFe_DrawVideoScreen(void)
 	right = EF_PS2_VIEW_W - (float)s_videoSafeRight * (EF_PS2_VIEW_W / 640.0f);
 	bottom = EF_PS2_VIEW_H - (float)s_videoSafeBottom * (EF_PS2_VIEW_H / 480.0f);
 	bright = ((uis.realtime / 250) & 1) ? qtrue : qfalse;
-	for (i = 0; i < 4; ++i)
+	for (i = 0; i < EF_VIDEO_CORNER_COUNT; ++i)
 	{
 		cornerColors[i] = (i == s_videoCorner && bright) ? colorTable[CT_WHITE] : s_ps2Gold;
 	}
@@ -2725,10 +2728,14 @@ static void EFFe_DrawControllerScreen(void)
 	EFFe_DrawControllerGlyph(1005.0f, 590.0f, 44.0f, 44.0f, s_assets.xboxRStick);
 	EFFe_DrawControllerGlyph(1005.0f, 665.0f, 44.0f, 44.0f, s_assets.xboxRStick);
 	EFFe_DrawControllerSmallText(1060.0f, 555.0f, "Analog Right:");
-	EFFe_DrawControllerAnalogText(1070.0f, 590.0f, "LOOK DOWN");
-	EFFe_DrawControllerAnalogText(1070.0f, 628.0f, "LOOK UP");
+	EFFe_DrawControllerAnalogText(1070.0f, 590.0f, s_controllerInvertY ? "LOOK UP" : "LOOK DOWN");
+	EFFe_DrawControllerAnalogText(1070.0f, 628.0f, s_controllerInvertY ? "LOOK DOWN" : "LOOK UP");
 	EFFe_DrawControllerAnalogText(1070.0f, 670.0f, "TURN LEFT");
 	EFFe_DrawControllerAnalogText(1070.0f, 708.0f, "TURN RIGHT");
+	EFFe_DrawControllerGlyph(650.0f, 770.0f, 44.0f, 44.0f, s_assets.xboxDpad[2]);
+	EFFe_DrawControllerGlyph(1225.0f, 770.0f, 44.0f, 44.0f, s_assets.xboxDpad[3]);
+	EFFe_DrawPs2TextColor(960.0f, 770.0f, s_controllerInvertY ? "INVERT Y: ON" : "INVERT Y: OFF",
+		EF_FRONTEND_FONT_BIG, UI_CENTER, s_ps2MapGold, 0.75f, 1.00f);
 }
 
 static void EFFe_LoadAudioState(void)
@@ -2788,8 +2795,14 @@ static void EFFe_CancelAudioState(void)
 #endif
 }
 
+static void EFFe_LoadControllerState(void)
+{
+	s_controllerInvertY = ui.Cvar_VariableValue("m_pitch") > 0 ? qtrue : qfalse;
+}
+
 static void EFFe_LoadVideoState(void)
 {
+	s_videoTrilinear = !Q_stricmp(UI_Cvar_VariableString("r_textureMode"), "GL_LINEAR_MIPMAP_LINEAR") ? qtrue : qfalse;
 	s_videoSafeLeft = EFFe_ClampInt((int)ui.Cvar_VariableValue("stefx_safeAreaLeft"), 0, 96);
 	s_videoSafeTop = EFFe_ClampInt((int)ui.Cvar_VariableValue("stefx_safeAreaTop"), 0, 72);
 	s_videoSafeRight = EFFe_ClampInt((int)ui.Cvar_VariableValue("stefx_safeAreaRight"), 0, 96);
@@ -2807,6 +2820,7 @@ static void EFFe_LoadVideoState(void)
 
 static void EFFe_ApplyVideoState(void)
 {
+	ui.Cvar_Set("r_textureMode", s_videoTrilinear ? "GL_LINEAR_MIPMAP_LINEAR" : "GL_LINEAR_MIPMAP_NEAREST");
 	ui.Cvar_SetValue("stefx_safeAreaLeft", (float)s_videoSafeLeft);
 	ui.Cvar_SetValue("stefx_safeAreaTop", (float)s_videoSafeTop);
 	ui.Cvar_SetValue("stefx_safeAreaRight", (float)s_videoSafeRight);
@@ -2816,10 +2830,13 @@ static void EFFe_ApplyVideoState(void)
 	Settings.safeAreaTop = s_videoSafeTop;
 	Settings.safeAreaRight = s_videoSafeRight;
 	Settings.safeAreaBottom = s_videoSafeBottom;
+	Settings.textureFilter = s_videoTrilinear ? 1 : 0;
 	if (!Settings.Save())
 	{
 		XBLog_WriteCritical("STEFX_SAFE_AREA: settings persistence failed");
 	}
+	XBLog_WriteCriticalf("STEFX_SETTINGS: video accepted filter=%d safe=%d,%d,%d,%d",
+		Settings.textureFilter, s_videoSafeLeft, s_videoSafeTop, s_videoSafeRight, s_videoSafeBottom);
 	XBLF("STEFX_SAFE_AREA: accepted left=%d top=%d right=%d bottom=%d",
 		s_videoSafeLeft, s_videoSafeTop, s_videoSafeRight, s_videoSafeBottom);
 #endif
@@ -3207,6 +3224,10 @@ static void EFFe_SetScreen(efFrontendScreen_t screen, int cursor)
 	else if (s_screen == EF_SCREEN_VIDEO)
 	{
 		EFFe_LoadVideoState();
+	}
+	else if (s_screen == EF_SCREEN_CONTROLLER)
+	{
+		EFFe_LoadControllerState();
 	}
 	else if (s_screen == EF_SCREEN_NEWGAME)
 	{
@@ -4231,9 +4252,14 @@ static void EFFe_HandleAudioKey(int key)
 
 static void EFFe_HandleVideoKey(int key)
 {
+	if (key == A_JOY9)
+	{
+		s_videoTrilinear = s_videoTrilinear ? qfalse : qtrue;
+		return;
+	}
 	if (key == A_JOY16)
 	{
-		s_videoCorner = (s_videoCorner + 1) & 3;
+		s_videoCorner = (s_videoCorner + 1) % EF_VIDEO_CORNER_COUNT;
 #ifdef _XBOX
 		XBLF("STEFX: EF video screen-size switch corner=%d", s_videoCorner);
 #endif
@@ -4245,6 +4271,7 @@ static void EFFe_HandleVideoKey(int key)
 		s_videoSafeTop = 0;
 		s_videoSafeRight = 0;
 		s_videoSafeBottom = 0;
+		s_videoTrilinear = qfalse;
 #ifdef _XBOX
 		XBLF("STEFX_SAFE_AREA: default corner=%d", s_videoCorner);
 #endif
@@ -4288,14 +4315,121 @@ static void EFFe_HandleVideoKey(int key)
 
 static void EFFe_HandleControllerKey(int key)
 {
-	if (EFFe_IsBackKey(key) || EFFe_IsAcceptKey(key))
+	if (EFFe_IsBackKey(key))
 	{
+		EFFe_ReturnToConfigure();
+		return;
+	}
+	if (EFFe_IsAcceptKey(key))
+	{
+		ui.Cvar_SetValue("m_pitch", s_controllerInvertY ? 0.022f : -0.022f);
 #ifdef _XBOX
-		XBLF("STEFX: EF controller menu close key=%d", key);
+		Settings.invertAim[0] = s_controllerInvertY != qfalse;
+		if (!Settings.Save())
+		{
+			XBLog_WriteCritical("STEFX_SETTINGS: controller settings persistence failed");
+		}
+		XBLog_WriteCriticalf("STEFX_SETTINGS: controller accepted invertY=%d", s_controllerInvertY ? 1 : 0);
 #endif
 		EFFe_ReturnToConfigure();
+		return;
+	}
+	if (EFFe_IsLeftKey(key) || EFFe_IsRightKey(key))
+	{
+		s_controllerInvertY = s_controllerInvertY ? qfalse : qtrue;
 	}
 }
+
+#ifdef _XBOX
+// Explicit, process-local diagnostics only. No OS/controller injection. The
+// write pass deliberately saves preferences; back up the title's saves first.
+// A separate readback boot observes restoration without modifying preferences.
+static void EFFe_RunSettingsSmoke(int realtime, const char *target)
+{
+	const qboolean readback = !Q_stricmp(target, "settings-readback") ? qtrue : qfalse;
+	int delay = 2000;
+	if (!s_menuSmokeStage || Q_stricmp(target, s_menuSmokeTarget))
+	{
+		Q_strncpyz(s_menuSmokeTarget, target, sizeof(s_menuSmokeTarget));
+		s_menuSmokeStage = 1;
+		s_menuSmokeNextRealtime = 0;
+	}
+	if (realtime < s_menuSmokeNextRealtime) return;
+
+	switch (s_menuSmokeStage)
+	{
+	case 1:
+		if (s_screen != EF_SCREEN_MAIN) return;
+		s_cursor = 4;
+		EFFe_HandleMainKey(A_ENTER);
+		break;
+	case 2:
+		s_cursor = 2;
+		EFFe_HandleConfigureKey(A_ENTER);
+		if (readback) delay = 20000;
+		break;
+	case 3:
+		if (!readback)
+		{
+			EFFe_HandleControllerKey(A_CURSOR_RIGHT);
+			delay = 20000; // Hold the pending inversion for a native capture.
+			break;
+		}
+		EFFe_HandleControllerKey(A_ESCAPE);
+		s_cursor = 1;
+		EFFe_HandleConfigureKey(A_ENTER);
+		s_menuSmokeStage = 11;
+		break;
+	case 4:
+		EFFe_HandleControllerKey(A_ENTER);
+		s_cursor = 2;
+		EFFe_HandleConfigureKey(A_ENTER);
+		EFFe_HandleControllerKey(A_CURSOR_LEFT);
+		EFFe_HandleControllerKey(A_ESCAPE); // Discard the opposite inversion.
+		s_cursor = 1;
+		EFFe_HandleConfigureKey(A_ENTER);
+		EFFe_HandleVideoKey(A_JOY14); // Defaults before all four corner checks.
+		break;
+	case 5: case 6: case 7: case 8:
+		EFFe_HandleVideoKey((s_videoCorner == EF_VIDEO_CORNER_TL ||
+			s_videoCorner == EF_VIDEO_CORNER_BL) ? A_CURSOR_RIGHT : A_CURSOR_LEFT);
+		EFFe_HandleVideoKey((s_videoCorner == EF_VIDEO_CORNER_TL ||
+			s_videoCorner == EF_VIDEO_CORNER_TR) ? A_CURSOR_DOWN : A_CURSOR_UP);
+		EFFe_HandleVideoKey(A_JOY16);
+		break;
+	case 9:
+		EFFe_HandleVideoKey(A_JOY9);
+		delay = 20000; // Hold trilinear and the adjusted bounds for capture.
+		break;
+	case 10:
+		EFFe_HandleVideoKey(A_ENTER);
+		s_cursor = 1;
+		EFFe_HandleConfigureKey(A_ENTER);
+		break;
+	case 11:
+		EFFe_HandleVideoKey(A_JOY14);
+		EFFe_HandleVideoKey(A_ESCAPE); // Defaults must not replace saved values.
+		s_cursor = 1;
+		EFFe_HandleConfigureKey(A_ENTER);
+		break;
+	default:
+		XBLog_WriteCriticalf("STEFX_SETTINGS_TEST: complete target=%s pitch=%g filter=%s safe=%g,%g,%g,%g",
+			target, ui.Cvar_VariableValue("m_pitch"), UI_Cvar_VariableString("r_textureMode"),
+			ui.Cvar_VariableValue("stefx_safeAreaLeft"), ui.Cvar_VariableValue("stefx_safeAreaTop"),
+			ui.Cvar_VariableValue("stefx_safeAreaRight"), ui.Cvar_VariableValue("stefx_safeAreaBottom"));
+		ui.Cvar_Set("stefx_menu_smoke", "0");
+		s_menuSmokeStage = 0;
+		s_menuSmokeTarget[0] = '\0';
+		return;
+	}
+	XBLog_WriteCriticalf("STEFX_SETTINGS_TEST: step=%d screen=%s pendingInvert=%d pitch=%g pendingFilter=%d corner=%d safe=%d,%d,%d,%d",
+		s_menuSmokeStage, EFFe_ScreenName(s_screen), s_controllerInvertY,
+		ui.Cvar_VariableValue("m_pitch"), s_videoTrilinear, s_videoCorner,
+		s_videoSafeLeft, s_videoSafeTop, s_videoSafeRight, s_videoSafeBottom);
+	++s_menuSmokeStage;
+	s_menuSmokeNextRealtime = realtime + delay;
+}
+#endif
 
 static void EFFe_RunMenuSmoke(int realtime)
 {
@@ -4314,6 +4448,12 @@ static void EFFe_RunMenuSmoke(int realtime)
 		s_menuSmokeStage = 0;
 		s_menuSmokeTarget[0] = '\0';
 		s_menuSmokeMainDownRemaining = 0;
+		return;
+	}
+
+	if (!Q_stricmp(target, "settings") || !Q_stricmp(target, "settings-readback"))
+	{
+		EFFe_RunSettingsSmoke(realtime, target);
 		return;
 	}
 
@@ -4840,6 +4980,11 @@ static void EFFe_RunMenuSmoke(int realtime)
 qboolean UI_EFMainMenu_IsActive(void)
 {
 	return s_active;
+}
+
+qboolean UI_EFMainMenu_IsCalibratingScreen(void)
+{
+	return (qboolean)(s_active && s_screen == EF_SCREEN_VIDEO);
 }
 
 void UI_EFMainMenu_Open(void)

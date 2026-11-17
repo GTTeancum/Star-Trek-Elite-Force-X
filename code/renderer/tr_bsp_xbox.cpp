@@ -3006,8 +3006,10 @@ void R_LoadEntities( void *data, int len ) {
 }
 
 #ifdef STEFX_ELITE_FORCE_SP
+extern void R_STEFX_ResetVisibilityReuse(void);
 void R_EFBeginRawWorldMapLoad(const char *name)
 {
+	R_STEFX_ResetVisibilityReuse();
 	tr.worldMapLoaded = qfalse;
 	tr.world = NULL;
 	memset(&s_worldData, 0, sizeof(s_worldData));
@@ -3212,6 +3214,8 @@ void RE_LoadWorldMap_Actual( const char *name, world_t &worldData, int index ) {
 #endif
 		Com_Error( ERR_DROP, "ERROR: attempted to redundantly load world map\n" );
 	}
+
+	R_STEFX_ResetVisibilityReuse();
 
 	// set default sun direction to be used if it isn't
 	// overridden by a shader

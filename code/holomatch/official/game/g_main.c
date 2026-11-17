@@ -1843,6 +1843,8 @@ extern void G_PickBorgQueen( void );
 extern void INeedAHero( void );
 extern qboolean levelExiting;
 extern int actionHeroClientNum;
+#include "../../../qcommon/stefx_console_workload.h"
+
 void G_RunFrame( int levelTime ) {
 	int			i;
 	gentity_t	*ent;
@@ -1986,6 +1988,7 @@ end = trap_Milliseconds();
 
 	// for tracking changes
 	CheckCvars();
+	G_STEFX_PublishConsoleWorkload();
 
 	if ( !levelExiting )
 	{

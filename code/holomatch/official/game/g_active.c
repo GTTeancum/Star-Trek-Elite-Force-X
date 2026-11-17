@@ -2,6 +2,8 @@
 //
 
 #include "g_local.h"
+extern volatile unsigned int g_SPXBConsoleQualification;
+extern volatile unsigned int g_SPXBConsoleFire[4];
 
 #if defined(STEFX_SP_HOSTED_MP)
 extern void XBLog_WriteCriticalf(const char *fmt, ...);
@@ -1513,10 +1515,14 @@ void ClientEvents( gentity_t *ent, int oldEventSequence ) {
 
 		case EV_FIRE_WEAPON:
 			FireWeapon( ent, qfalse );
+            if (g_SPXBConsoleQualification && ent->s.number >= 0 && ent->s.number < 4)
+                ++g_SPXBConsoleFire[ent->s.number];
 			break;
 
 		case EV_ALT_FIRE:
 			FireWeapon( ent, qtrue );
+            if (g_SPXBConsoleQualification && ent->s.number >= 0 && ent->s.number < 4)
+                ++g_SPXBConsoleFire[ent->s.number];
 			break;
 
 		case EV_FIRE_EMPTY_PHASER:

@@ -7,7 +7,7 @@
 #include "retail_renderer_contract.h"
 
 extern float GetNoiseTime( int t );
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 extern bool STEFX_CoopDiffuseLight(trRefEntity_t *ent);
 #endif
 
@@ -1404,7 +1404,7 @@ void RB_CalcDiffuseColor( DWORD *colors )
 	// Make sure to turn lighting on....
 	qglEnable(GL_LIGHTING);
 
-#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#if defined(STEFX_ELITE_FORCE_SP)
 	if (!::STEFX_CoopDiffuseLight(ent)) {
 #endif
 	qglLightfv(0, GL_AMBIENT, ent->ambientLight);
@@ -1418,7 +1418,7 @@ void RB_CalcDiffuseColor( DWORD *colors )
 	}
 
 	qglLightfv(0, GL_SPOT_DIRECTION, ent->lightDir);
-#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#if defined(STEFX_ELITE_FORCE_SP)
 	}
 #endif
 

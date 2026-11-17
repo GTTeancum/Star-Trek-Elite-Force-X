@@ -1,5 +1,21 @@
 # Jedi Academy Xbox Build - Project Notes
 
+## Optimization pass closed; commit/push authorized - 2026-11-17
+
+The user ended the co-op/split-screen optimization and testing pass, describing
+its observed gain as at most 1-2 FPS. Do not resume optimization or runtime tests
+without a new request. The report contains post-work console measurements only;
+no A/B gain is established. Current runtime authority is the retail Xbox in
+devkit mode; no XEMU or other emulator testing is authorized for this work.
+See notes/coop_split_console_2026-11-16.md for the six changes, two qualified
+co-op workloads, three four-player Holomatch maps, and limited Stasis1 evidence.
+The delivered pair uses explicit build mask 15 / world mode 2; ordinary build
+helper defaults remain mask 0. All test processes ended, startup files were
+removed, and all nine original title save files were restored by hash readback.
+The user explicitly authorized committing and pushing the completed preferences
+fixes, split-screen work and reports. Keep local game assets/builds/evidence and
+unrelated user image changes out of this commit. No release upload is requested.
+
 ## Tester rebuild authorized — 2026-09-22
 
 User ended the optimization pass and requested unnecessary logging removal,

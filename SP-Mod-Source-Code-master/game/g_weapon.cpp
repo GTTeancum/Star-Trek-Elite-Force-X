@@ -13,6 +13,9 @@ extern "C" volatile unsigned int g_SPXBGameWeaponFireStage;
 extern "C" volatile unsigned int g_SPXBGameWeaponFireEntity;
 extern "C" volatile unsigned int g_SPXBGameWeaponFireWeaponAlt;
 extern "C" volatile unsigned int g_SPXBPlayerPrimaryFireCompletions;
+extern "C" volatile unsigned int g_SPXBConsoleQualification, g_SPXBConsoleNpcFire;
+extern "C" volatile unsigned int g_SPXBConsoleFire[4];
+extern "C" volatile unsigned int g_SPXBSplitP2Ent;
 extern "C" volatile unsigned int g_SPXBPlayerAltFireCompletions;
 #endif
 
@@ -3749,6 +3752,11 @@ void FireWeapon( gentity_t *ent, qboolean alt_fire )
 			++g_SPXBPlayerPrimaryFireCompletions;
 		}
 	}
+    if (g_SPXBConsoleQualification) {
+        if (ent->s.number == 0) ++g_SPXBConsoleFire[0];
+        else if ((unsigned int)ent->s.number == g_SPXBSplitP2Ent) ++g_SPXBConsoleFire[1];
+        else if (ent->NPC) ++g_SPXBConsoleNpcFire;
+    }
 	g_SPXBGameWeaponFireStage = 0x4746FFFF; /* 'GFff': complete */
 #endif
 }

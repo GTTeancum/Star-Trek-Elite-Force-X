@@ -3,8 +3,9 @@ from pathlib import Path
 import subprocess
 
 root=Path.cwd();out=root/'build/research/letterbox_perf'
-source=(root/'code/win32/win_qgl_dx8.cpp').read_text()
-original='static void dllLightfv('+source.split('static void dllLightfv(',1)[1].split('#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)\n// Co-op only.',1)[0]
+source=(root/'code/win32/win_qgl_dx8.cpp').read_text(encoding='utf-8')
+defaults=(root/'code/qcommon/stefx_split_perf_defaults.h').read_text(encoding='utf-8')
+original=source[source.index('static __declspec(noinline) void STEFX_UpdateLightField('):source.index('// Split views only.')].rsplit('#if defined(_XBOX)',1)[0]
 helper=source.split('// STEFX_COOP_DIFFUSE_LIGHT_BEGIN',1)[1].split('// STEFX_COOP_DIFFUSE_LIGHT_END',1)[0]
 prefix=r'''
 #include <assert.h>
@@ -39,7 +40,7 @@ cvar_t*Cvar_Get(const char*n,const char*defaultValue,int){
  assert(!strcmp(n,"stefx_splitScreenMode"));return &testGame;
 }
 float VectorLengthSquared(const float*v){return v[0]*v[0]+v[1]*v[1]+v[2]*v[2];}
-unsigned int g_SPXBCoopLight[16];bool s_coopLightFailed;
+unsigned int g_SPXBCoopLight[16],g_SPXBCoopLightMismatch[64];bool s_coopLightFailed;
 bool g_SPXBPerfSampleActive=true;
 unsigned __int64 STEFX_XboxReadTsc(){return 10;}
 unsigned int STEFX_XboxElapsedCycles(unsigned __int64){return 20;}
@@ -97,7 +98,7 @@ int main(){
 }
 '''
 cpp=out/'coop_light_test.cpp';exe=out/'coop_light_test.exe'
-cpp.write_text(prefix+original+'\n#define qglLightfv dllLightfv\n'+helper+test)
+cpp.write_text(prefix+defaults+original+'\n#define qglLightfv dllLightfv\n'+helper+test)
 vc=Path('C:/Program Files (x86)/Microsoft Visual Studio 8/VC')
 subprocess.run(['C:/XDK_5558/XDK/xbox/bin/vc71/CL.Exe','/nologo','/MT','/EHsc','/O2','/I'+str(vc/'include'),str(cpp),'/Fo'+str(out/'coop_light_test.obj'),'/Fe'+str(exe),'/link','/LIBPATH:'+str(vc/'lib'),'/LIBPATH:'+str(vc/'PlatformSDK/Lib')],check=True)
 subprocess.run([str(exe)],check=True)

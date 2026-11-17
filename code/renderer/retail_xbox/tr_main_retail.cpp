@@ -1510,7 +1510,7 @@ R_AddDrawSurf
 */
 void R_AddDrawSurf( const surfaceType_t *surface, const shader_t *shader, 
 				   int fogIndex, int dlightMap ) {
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	if (STEFX_CoopSkipHiddenSurface(surface, shader)) return;
 #endif
 	int			index;
@@ -1672,7 +1672,7 @@ void R_AddEntitySurfaces (void) {
 	      tr.currentEntityNum < tr.refdef.num_entities; 
 		  tr.currentEntityNum++ ) {
 		ent = tr.currentEntity = &tr.refdef.entities[tr.currentEntityNum];
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	s_coopModelOutsidePvs = false;
 #endif
 
@@ -1868,7 +1868,7 @@ void R_AddEntitySurfaces (void) {
 			STEFX_RETAIL_SCOPE R_RotateForEntity( ent, &tr.viewParms, &tr.or );
 
 			tr.currentModel = R_GetModelByHandle( ent->e.hModel );
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	s_coopModelOutsidePvs = STEFX_CoopModelOutsidePvs(ent, tr.currentModel);
 #endif
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && defined(STEFX_SP_HOSTED_MP)
@@ -1977,9 +1977,7 @@ Ghoul2 Insert End
 	}
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-#if !defined(STEFX_SP_HOSTED_MP)
 	s_coopModelOutsidePvs = false;
-#endif
 	if ( ( stefxSplitOffscreenEffectsCulled > 0 ||
 		stefxSplitDistantEffectsCulled > 0 ||
 		stefxSplitDistantPickupsCulled > 0 ) &&
@@ -2200,6 +2198,7 @@ void R_RenderView (viewParms_t *parms) {
 
 #ifdef _XBOX
 	R_GenerateDrawSurfs(parms->isPortal);
+#if defined(STEFX_PVS_DIAGNOSTICS)
 	if (!parms->isPortal) {
 		g_SPXBHMPvsProbe[66] = *(unsigned int *)&tr.viewParms.zFar;
 		g_SPXBHMPvsProbe[67] = *(unsigned int *)&tr.viewParms.fovX;
@@ -2208,6 +2207,7 @@ void R_RenderView (viewParms_t *parms) {
 		g_SPXBHMPvsProbe[70] = *(unsigned int *)&tr.viewParms.or.origin[1];
 		g_SPXBHMPvsProbe[71] = *(unsigned int *)&tr.viewParms.or.origin[2];
 	}
+#endif
 #else
 	R_GenerateDrawSurfs();
 #endif

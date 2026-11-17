@@ -13,12 +13,20 @@ static	centity_t	*cg_solidEntities[MAX_ENTITIES_IN_SNAPSHOT];
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
 #include "../../code/win32/xb_perf.h"
 #include "stefx_fx_trace_bounds.h"
+#include "../../code/qcommon/stefx_split_perf_defaults.h"
 #define STEFX_COOP_FX_TRACE 1
 extern void CM_STEFX_CoopModelBounds(clipHandle_t model, vec3_t mins, vec3_t maxs);
 extern "C" void XBLog_WriteCritical(const char *text);
 // mode, queries, entity visits, mask rejects, bounds rejects, verified rejects,
 // mismatches, transformed calls, world cycles, entity cycles, bound fills, fallback.
 extern "C" volatile unsigned int g_SPXBCoopFxTrace[12] = {0};
+extern "C" volatile unsigned int g_SPXBCoopFxMismatch[32] = {0};
+extern "C" void XBLog_WriteCriticalf(const char *text, ...);
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
+#define STEFX_FX_TRACE_COUNT(index) (++g_SPXBCoopFxTrace[index])
+#else
+#define STEFX_FX_TRACE_COUNT(index) ((void)0)
+#endif
 static vmCvar_t s_fxTraceMode, s_fxTraceGameMode;
 static bool s_fxTraceRegistered, s_fxTraceFailed;
 static int s_fxTraceFrame = -1;
@@ -29,7 +37,7 @@ static stefxFxBounds_t s_fxTraceBounds[MAX_ENTITIES_IN_SNAPSHOT];
 static int STEFX_FxTraceMode(void) {
 	if (!cg_stefxSplitScreen.integer || cg_stefxSplitScreenPlayers.integer < 2) return 0;
 	if (!s_fxTraceRegistered) {
-		cgi_Cvar_Register(&s_fxTraceMode, "cg_efCoopFxTrace", "0", 0);
+		cgi_Cvar_Register(&s_fxTraceMode, "cg_efCoopFxTrace", STEFX_SPLIT_FX_DEFAULT, 0);
 		cgi_Cvar_Register(&s_fxTraceGameMode, "stefx_splitScreenMode", "coop", 0);
 		s_fxTraceRegistered = true;
 	}
@@ -122,11 +130,11 @@ static void CG_ClipMoveToEntitiesInternal ( const vec3_t start, const vec3_t min
 #if STEFX_COOP_FX_TRACE
 		bool reject = false;
 		if (fxMode) {
-			++g_SPXBCoopFxTrace[2];
+			STEFX_FX_TRACE_COUNT(2);
 			// CM_TempBoxModel always uses CONTENTS_BODY in this engine. Spark
 			// traces asking only for CONTENTS_SOLID cannot hit these entities.
 			if (ent->solid != SOLID_BMODEL && !(mask & CONTENTS_BODY)) {
-				reject = true; ++g_SPXBCoopFxTrace[3];
+				reject = true; STEFX_FX_TRACE_COUNT(3);
 				if (fxMode == 1) continue;
 			}
 		}
@@ -148,10 +156,10 @@ static void CG_ClipMoveToEntitiesInternal ( const vec3_t start, const vec3_t min
 					CM_STEFX_CoopModelBounds(cmodel,localMins,localMaxs);
 					b->canReject=STEFX_FxWorldBounds(origin,localMins,localMaxs,b->mins,b->maxs);
 					VectorCopy(origin,b->origin);
-					b->valid=true; b->model=cmodel; ++g_SPXBCoopFxTrace[10];
+					b->valid=true; b->model=cmodel; STEFX_FX_TRACE_COUNT(10);
 				}
 				if (b->canReject && STEFX_FxWorldBoundsDisjoint(queryMins,queryMaxs,b->mins,b->maxs)) {
-					reject=true; ++g_SPXBCoopFxTrace[4];
+					reject=true; STEFX_FX_TRACE_COUNT(4);
 					if (fxMode == 1) continue;
 				}
 			}
@@ -174,7 +182,7 @@ static void CG_ClipMoveToEntitiesInternal ( const vec3_t start, const vec3_t min
 
 
 #if STEFX_COOP_FX_TRACE
-		if (fxMode) ++g_SPXBCoopFxTrace[7];
+		if (fxMode) STEFX_FX_TRACE_COUNT(7);
 #endif
 		cgi_CM_TransformedBoxTrace ( &trace, start, end,
 			mins, maxs, cmodel,  mask, origin, angles);
@@ -183,6 +191,32 @@ static void CG_ClipMoveToEntitiesInternal ( const vec3_t start, const vec3_t min
 			++g_SPXBCoopFxTrace[5];
 			if (trace.allsolid || trace.fraction < tr->fraction || (trace.startsolid && !tr->startsolid)) {
 				++g_SPXBCoopFxTrace[6]; s_fxTraceFailed=true; fxMode=0;
+                // First failure retains the exact query and collider, never a
+                // fabricated replacement result. The original trace still wins.
+                g_SPXBCoopFxMismatch[1]=ent->number;
+                g_SPXBCoopFxMismatch[2]=cmodel;
+                g_SPXBCoopFxMismatch[3]=mask;
+                g_SPXBCoopFxMismatch[4]=ent->solid;
+                for (int axis=0; axis<3; ++axis) {
+                    unsigned int bits;
+                    memcpy(&bits,&start[axis],4); g_SPXBCoopFxMismatch[5+axis]=bits;
+                    memcpy(&bits,&end[axis],4); g_SPXBCoopFxMismatch[8+axis]=bits;
+                    if (mins) { memcpy(&bits,&mins[axis],4); g_SPXBCoopFxMismatch[11+axis]=bits; }
+                    if (maxs) { memcpy(&bits,&maxs[axis],4); g_SPXBCoopFxMismatch[14+axis]=bits; }
+                    memcpy(&bits,&origin[axis],4); g_SPXBCoopFxMismatch[17+axis]=bits;
+                    memcpy(&bits,&angles[axis],4); g_SPXBCoopFxMismatch[20+axis]=bits;
+                }
+                unsigned int bits;
+                memcpy(&bits,&tr->fraction,4); g_SPXBCoopFxMismatch[23]=bits;
+                memcpy(&bits,&trace.fraction,4); g_SPXBCoopFxMismatch[24]=bits;
+                g_SPXBCoopFxMismatch[25]=trace.startsolid;
+                g_SPXBCoopFxMismatch[26]=trace.allsolid;
+                g_SPXBCoopFxMismatch[27]=cg.snap->serverTime;
+                g_SPXBCoopFxMismatch[28]=skipNumber;
+                g_SPXBCoopFxMismatch[29]=(mins?1:0)|(maxs?2:0);
+                g_SPXBCoopFxMismatch[0]=1;
+                XBLog_WriteCriticalf("STEFX_COOP_FX_TRACE: collider=%d model=%d mask=%x fraction=%g/%g time=%d",
+                    ent->number,cmodel,mask,tr->fraction,trace.fraction,cg.snap->serverTime);
 				g_SPXBCoopFxTrace[0]=0;
 				XBLog_WriteCritical("STEFX_COOP_FX_TRACE: rejected collider affected trace; disabled optimization");
 			}
@@ -232,13 +266,22 @@ void CG_STEFX_FxTrace(trace_t *result, const vec3_t start, const vec3_t mins,
 	if (!mode) { CG_Trace(result,start,mins,maxs,end,skipNumber,mask); return; }
 	++g_SPXBCoopFxTrace[1];
 	trace_t t;
+
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	unsigned __int64 stamp=STEFX_XboxReadTsc();
+#endif
 	cgi_CM_BoxTrace(&t,start,end,mins,maxs,0,mask);
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	g_SPXBCoopFxTrace[8]+=STEFX_XboxElapsedCycles(stamp);
+#endif
 	t.entityNum=t.fraction != 1.0 ? ENTITYNUM_WORLD : ENTITYNUM_NONE;
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	stamp=STEFX_XboxReadTsc();
+#endif
 	CG_ClipMoveToEntitiesInternal(start,mins,maxs,end,skipNumber,mask,&t,mode);
+#if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	g_SPXBCoopFxTrace[9]+=STEFX_XboxElapsedCycles(stamp);
+#endif
 	*result=t;
 }
 #endif
