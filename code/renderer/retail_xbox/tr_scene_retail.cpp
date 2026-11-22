@@ -1307,6 +1307,10 @@ void RE_RenderScene( const refdef_t *fd ) {
 		{
 			int slot;
 			int splitDrawSurfBase;
+#ifndef STEFX_SP_HOSTED_MP
+			if (R_STEFX_CoopLODActive())
+				R_STEFX_PrepareCoopModelLODs();
+#endif
 			trRefdef_t sourceRefdef = tr.refdef;
 			viewParms_t sourceParms = parms;
 			static int s_stefxSplitViewportLogBudget = 3;

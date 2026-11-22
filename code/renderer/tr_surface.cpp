@@ -2648,6 +2648,11 @@ static void RB_SurfaceLathe()
 
 	// do scalability stuff...r_lodbias 0-3
 	int lod = r_lodbias->integer + 1;
+	#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	if (backEnd.viewParms.stefxSplitView && R_STEFX_CoopLODActive())
+		lod = 4;
+	else
+#endif
 	if ( lod > 4 )
 	{
 		lod = 4;

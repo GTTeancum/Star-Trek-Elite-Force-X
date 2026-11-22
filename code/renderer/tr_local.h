@@ -1075,6 +1075,10 @@ Ghoul2 Insert End
 
 #define	MAX_MOD_KNOWN	1024
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+bool R_STEFX_CoopLODActive(void);
+void R_STEFX_PrepareCoopModelLODs(void);
+#endif
 void		R_ModelInit (void);
 model_t		*R_GetModelByHandle( qhandle_t hModel );
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)

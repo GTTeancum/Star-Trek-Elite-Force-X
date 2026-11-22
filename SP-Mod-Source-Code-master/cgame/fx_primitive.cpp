@@ -6,6 +6,7 @@
 #include "cg_local.h"
 #include "FX_Public.h"
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+extern bool R_STEFX_CoopLODActive(void);
 extern void CG_STEFX_FxTrace(trace_t *, const vec3_t, const vec3_t,
 	const vec3_t, const vec3_t, int, int);
 #endif
@@ -1949,6 +1950,13 @@ void FXCylinder::Draw( void )
 	int			segments;
 
 	// allow for overriding the LOD mechanism, not recommended, but hey, flexibility is often cool...
+	#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	if (R_STEFX_CoopLODActive())
+	{
+		segments = 7;
+	}
+	else
+#endif
 	if ( m_flags & FXF_NO_LOD )
 	{
 		segments = NUM_CYLINDER_SEGMENTS;

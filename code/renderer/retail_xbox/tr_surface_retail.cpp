@@ -893,6 +893,11 @@ static void RB_SurfaceCylinder( void )
 	segments = NUM_CYLINDER_SEGMENTS * detail;
 
 	// 3 is the absolute minimum, but the pop between 3-8 is too noticeable
+	#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	if (backEnd.viewParms.stefxSplitView && R_STEFX_CoopLODActive())
+		segments = 8;
+	else
+#endif
 	if ( segments < 8 )
 	{
 		segments = 8;
@@ -1628,7 +1633,13 @@ void RB_SurfaceGrid( srfGridMesh_t *cv ) {
 	tess.dlightBits |= dlightBits;
 
 	// determine the allowable discrepance
-	lodError = LodErrorForVolume( cv->lodOrigin, cv->lodRadius );
+	#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	// Zero retains the mandatory rows and shared patch boundaries.
+	if (backEnd.viewParms.stefxSplitView && R_STEFX_CoopLODActive())
+		lodError = 0.0f;
+	else
+#endif
+		lodError = LodErrorForVolume( cv->lodOrigin, cv->lodRadius );
 
 	// determine which rows and columns of the subdivision
 	// we are actually going to use

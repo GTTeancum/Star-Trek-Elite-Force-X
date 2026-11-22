@@ -12,6 +12,7 @@
 #ifdef _XBOX
 #include "../win32/glw_win_dx8.h"
 #include "../win32/win_stencilshadow.h"
+#include "../win32/xb_log.h"
 #include <xgraphics.h>
 #include <xgmath.h>
 #include "../win32/shader_constants.h"
@@ -188,10 +189,36 @@ static int R_ComputeLOD( trRefEntity_t *ent ) {
 	int		lod;
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	qboolean stefxThreePlusLodBias;
+#ifndef STEFX_SP_HOSTED_MP
+	if (tr.viewParms.stefxSplitView && R_STEFX_CoopLODActive()) {
+		model_t *model = tr.currentModel;
+		int lowest = 0;
+		if (model->type == MOD_MDR) {
+			lowest = model->md4->numLODs - 1;
+		} else if (model->type == MOD_MESH) {
+			for (int i = MD3_MAX_LODS - 1; i > 0; --i) {
+				if (model->md3[i] && model->md3[i] != model->md3[0]) {
+					lowest = i;
+					break;
+				}
+			}
+		}
+		if (lowest > 0) {
+			static unsigned int logged;
+			const unsigned int bit = 1u << (tr.viewParms.stefxSplitSlot * 2 + (model->type == MOD_MDR));
+			if (!(logged & bit)) {
+				logged |= bit;
+				XBLog_WriteCriticalf("COOP_LOD: view %d selected %s LOD%d",
+					tr.viewParms.stefxSplitSlot + 1, model->name, lowest);
+			}
+		}
+		return lowest;
+	}
+#endif
 
 	/* Keep a one-step packaged LOD bias for non-MDR world models in 3P/4P.
 	 * Elite Force's multipart MDR players retain their established LOD-0
-	 * contract; selecting their lower LODs is not safe on this renderer. */
+	 * contract in Holomatch. */
 	stefxThreePlusLodBias =
 		tr.viewParms.stefxSplitThreePlusEconomy &&
 		tr.currentModel->type != MOD_MDR &&
@@ -205,7 +232,7 @@ static int R_ComputeLOD( trRefEntity_t *ent ) {
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	// Elite Force MDR actors use multipart player assets and must stay on the
-	// highest-detail model in every viewport.
+	// highest-detail model outside the co-op path above.
 	if ( tr.currentModel->type == MOD_MDR )
 	{
 		return 0;

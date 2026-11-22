@@ -2335,6 +2335,76 @@ fail:
 // wrapper function needed to avoid problems with mid-function returns so I can safely use this bool to tell the
 //	z_malloc-fail recovery code whether it's safe to ditch any model caches...
 //
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+bool R_STEFX_CoopLODActive(void)
+{
+	static cvar_t *split = Cvar_Get("stefx_splitScreen", "0", 0);
+	static cvar_t *players = Cvar_Get("stefx_splitScreenPlayers", "1", 0);
+	static cvar_t *mode = Cvar_Get("stefx_splitScreenMode", "coop", 0);
+	static int lastModeChange = -1;
+	static bool coop;
+	if (mode->modificationCount != lastModeChange) {
+		lastModeChange = mode->modificationCount;
+		coop = !Q_stricmp(mode->string, "coop");
+	}
+	return split->integer && players->integer == 2 && coop;
+}
+
+// Leave slot zero and numLods intact for base-model tags, frame bounds and solo views.
+static void R_LoadCoopMD3LOD(model_t *mod)
+{
+	if (mod->type != MOD_MESH || mod->md3[1] || mod->md3[2])
+		return;
+
+	char filename[MAX_QPATH];
+	const int len = strlen(mod->name);
+	if (len > 4 && len + 2 < sizeof(filename) && !Q_stricmp(mod->name + len - 4, ".md3")) {
+		Q_strncpyz(filename, mod->name, sizeof(filename));
+		Q_strlwr(filename);
+		for (int lod = MD3_MAX_LODS - 1; lod > 0; --lod) {
+			Com_sprintf(filename + len - 4, sizeof(filename) - (len - 4), "_%d.md3", lod);
+			CachedModels_t::iterator entry = CachedModels->find(filename);
+			void *buffer = entry == CachedModels->end() ? NULL : entry->second.pModelDiskImage;
+			qboolean cached = buffer ? qtrue : qfalse;
+			int size;
+			if (cached) {
+				size = entry->second.iAllocSize;
+			} else {
+				if (!FS_Access(filename))
+					continue;
+				size = FS_ReadFile(filename, &buffer);
+			}
+			const md3Header_t *header = (const md3Header_t *)buffer;
+			bool loaded = header && size >= sizeof(*header) && header->ident == MD3_IDENT &&
+				header->version == MD3_VERSION && header->ofsEnd == size &&
+				header->numFrames == mod->md3[0]->numFrames &&
+				R_LoadMD3(mod, lod, buffer, filename, cached);
+			if (buffer && !cached)
+				FS_FreeFile(buffer);
+			if (loaded) {
+				XBLog_WriteCriticalf("COOP_LOD: %s uses %s", mod->name, filename);
+				return;
+			}
+			mod->md3[lod] = NULL;
+			XBLog_WriteCriticalf("COOP_LOD: skipped incompatible %s", filename);
+		}
+	}
+	// Remember a base-only model so re-registration never repeats the disk probes.
+	mod->md3[1] = mod->md3[0];
+}
+
+static int coopModelsPrepared;
+void R_STEFX_PrepareCoopModelLODs(void)
+{
+	// Also cover models registered before the switch from a solo view to split screen.
+	while (coopModelsPrepared < tr.numModels) {
+		model_t *mod = tr.models[coopModelsPrepared++];
+		if (mod->type == MOD_MESH && !mod->md3[1] && !mod->md3[2])
+			RE_RegisterModel(mod->name);
+	}
+}
+#endif
+
 qboolean gbInsideRegisterModel = qfalse;
 qhandle_t RE_RegisterModel( const char *name )
 {
@@ -2348,6 +2418,10 @@ qhandle_t RE_RegisterModel( const char *name )
 	gbInsideRegisterModel = qtrue;	// !!!!!!!!!!!!!!
 
 		qhandle_t q = RE_RegisterModel_Actual( name );
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+	if (q && R_STEFX_CoopLODActive())
+		R_LoadCoopMD3LOD(R_GetModelByHandle(q));
+#endif
 
 if (!name || strlen(name) < 4 || stricmp(&name[strlen(name)-4],".gla")){
 	gbInsideRegisterModel = qfalse;		// GLA files recursively call this, so don't turn off half way. A reference count would be nice, but if any ERR_DROP ever occurs within the load then the refcount will be knackered from then on
@@ -2940,6 +3014,9 @@ void R_ModelInit( void )
 {
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 	STEFX_ResetMdrModelRegistry();
+#ifndef STEFX_SP_HOSTED_MP
+	coopModelsPrepared = 0;
+#endif
 #endif
 #ifdef _XBOX
 	// Sorry Raven, but static maps == fragmentation
