@@ -1189,7 +1189,7 @@ void R_Register( void )
 #endif
 	r_depthbits = Cvar_Get( "r_depthbits", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_overBrightBits = Cvar_Get ("r_overBrightBits", "0", CVAR_ARCHIVE | CVAR_LATCH );
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
 	Cvar_Get( "r_stefxLightmapBoost", "2.5", CVAR_ARCHIVE );
 #endif
 	r_ignorehwgamma = Cvar_Get( "r_ignorehwgamma", "0", CVAR_ARCHIVE | CVAR_LATCH);

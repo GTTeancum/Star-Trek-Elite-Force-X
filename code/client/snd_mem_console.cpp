@@ -13,6 +13,7 @@
 extern HANDLE Sys_FileStreamMutex;
 extern void S_XboxOnSoundLoaded(sfx_t *sfx);
 extern void QAL_XboxSetBufferDebugName(ALuint buffer, const char *name);
+extern void QAL_XboxBufferData(ALuint buffer, ALenum format, void *data, ALsizei size, ALsizei freq, unsigned int dataOffset);
 extern void *FS_STEFX_AllocExternalSoundBuffer(int len);
 extern qboolean FS_STEFX_FreeHeapFileBuffer(void *buffer);
 extern "C" volatile unsigned int g_SPXBAudioLoadStage;
@@ -35,8 +36,10 @@ qboolean gbInsideLoadSound = qfalse;	// Needed to link VVFIXME
 
 extern int Sys_GetFileCode(const char *name);
 
-static void S_FreeRawSoundData(void *data)
+static void S_FreeRawSoundData(void *&buffer)
 {
+	void *data = buffer;
+	buffer = NULL;
 	if (!data)
 	{
 		return;
@@ -75,15 +78,15 @@ void S_DrainRawSoundData(void)
 GetWavInfo
 ============
 */
-wavinfo_t GetWavInfo(byte *data)
+wavinfo_t GetWavInfo(byte *data, int headerBytes, int fileBytes)
 {
 	wavinfo_t info;
 	memset(&info, 0, sizeof(wavinfo_t));
 
-	if (!data) return info;
+	if (!data || headerBytes < 12 || headerBytes > fileBytes) return info;
 
 #ifdef _GAMECUBE
-	if (*(short*)&data[14] != 0)
+	if (headerBytes < 24 || *(short*)&data[14] != 0)
 	{
 		// invalid type, abort
 		return info;
@@ -101,7 +104,7 @@ wavinfo_t GetWavInfo(byte *data)
 		return info;
 	}
 
-	int dataofs = 12; // done with riff chunk
+	unsigned int dataofs = 12;
 	int fmtFound = 0;
 	int dataFound = 0;
 	unsigned short formatTag = 0;
@@ -109,23 +112,29 @@ wavinfo_t GetWavInfo(byte *data)
 	unsigned int rate = 0;
 	unsigned int byteRate = 0;
 	unsigned short bits = 0;
+	unsigned short blockAlign = 0;
 	unsigned int dataSize = 0;
 	unsigned int dataStart = 0;
 
-	while (dataofs > 0 && dataofs < 4096)
+	while (dataofs <= (unsigned int)headerBytes - 8)
 	{
 		char chunkName[5];
 		memcpy(chunkName, &data[dataofs], 4);
 		chunkName[4] = 0;
 		unsigned int chunkSize = *(unsigned int *)&data[dataofs + 4];
 		byte *chunkData = &data[dataofs + 8];
+		if (chunkSize > (unsigned int)fileBytes - dataofs - 8)
+			return info;
 
 		if (!strncmp(chunkName, "fmt ", 4))
 		{
+			if (chunkSize < 16 || dataofs + 24 > (unsigned int)headerBytes)
+				return info;
 			formatTag = *(unsigned short *)&chunkData[0];
 			channels = *(unsigned short *)&chunkData[2];
 			rate = *(unsigned int *)&chunkData[4];
 			byteRate = *(unsigned int *)&chunkData[8];
+			blockAlign = *(unsigned short *)&chunkData[12];
 			bits = *(unsigned short *)&chunkData[14];
 			fmtFound = 1;
 		}
@@ -144,10 +153,13 @@ wavinfo_t GetWavInfo(byte *data)
 		dataofs += 8 + ((chunkSize + 1) & ~1);
 	}
 
-	if (!fmtFound || !dataFound || !channels || !rate || !bits)
+	if (!fmtFound || !dataFound || (channels != 1 && channels != 2) || !rate || !bits || !dataSize)
 	{
 		return info;
 	}
+	if (formatTag == WAVE_FORMAT_XBOX_ADPCM &&
+		(bits != 4 || blockAlign != 36 * channels || dataSize % blockAlign))
+		return info;
 
 	info.rate = rate;
 	info.width = bits;
@@ -174,7 +186,7 @@ wavinfo_t GetWavInfo(byte *data)
 	else if (formatTag == WAVE_FORMAT_XBOX_ADPCM)
 	{
 		info.format = channels == 1 ? AL_FORMAT_MONO4 : AL_FORMAT_STEREO4;
-		info.samples = dataSize * 2;
+		info.samples = (dataSize / blockAlign) * 64;
 	}
 	else
 	{
@@ -784,7 +796,7 @@ qboolean S_EndLoadSound( sfx_t *sfx )
 
 	// loading a WAV, presumably...
 	data = (byte*)sfx->pSoundData;
-	info = GetWavInfo( data );
+	info = GetWavInfo(data, sfx->iSoundLength, sfx->iSoundLength);
 
 	if (info.size == 0)
 	{
@@ -796,7 +808,8 @@ qboolean S_EndLoadSound( sfx_t *sfx )
 				name ? name : "<unknown>", sfx->iFileCode, sfx->iSoundLength);
 		}
 #endif
-		if (!S_DecodeMP3Sound(sfx, data, sfx->iSoundLength, &info))
+		if ((sfx->iSoundLength >= 4 && !memcmp(data, "RIFF", 4)) ||
+			!S_DecodeMP3Sound(sfx, data, sfx->iSoundLength, &info))
 		{
 			S_FreeRawSoundData(sfx->pSoundData);
 			sfx->iFlags |= SFX_FLAG_RESIDENT | SFX_FLAG_DEFAULT;
@@ -829,14 +842,13 @@ qboolean S_EndLoadSound( sfx_t *sfx )
 	// Generate AL Buffer
 	alGenBuffers(1, &Buffer);
 
-	// Copy audio data to AL Buffer
-	// NOTE: pass the WHOLE file, header included.  Unlike PC OpenAL (which
-	// takes raw samples and needs data + dataofs), the Xbox AL shim's
-	// alBufferData calls _wavFindDataOffset() on this pointer to locate the
-	// data chunk itself, and REJECTS an ADPCM buffer whose offset is 0.
-	// Passing data + info.dataofs makes every ADPCM sound fail to load.
+#ifdef _XBOX
+	// QAL takes ownership of the allocation and aligns its sample payload for the APU.
+	QAL_XboxBufferData(Buffer, info.format, data, info.size, info.rate, info.dataofs);
+#else
 	alBufferData(Buffer, info.format, data, 
 		sfx->iSoundLength, info.rate);
+#endif
 	if (alGetError() != AL_NO_ERROR)
 	{
 #ifdef _XBOX
@@ -847,6 +859,7 @@ qboolean S_EndLoadSound( sfx_t *sfx )
 				name ? name : "<unknown>", sfx->iFileCode, info.waveFormatTag, info.format, sfx->iSoundLength, info.rate);
 		}
 #endif
+		alDeleteBuffers(1, &Buffer);
 		S_FreeRawSoundData(sfx->pSoundData);
 		sfx->iFlags |= SFX_FLAG_UNLOADED;
 		return qfalse;

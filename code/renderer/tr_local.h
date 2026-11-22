@@ -1083,6 +1083,7 @@ void		R_ModelInit (void);
 model_t		*R_GetModelByHandle( qhandle_t hModel );
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 const void	*R_STEFX_GetMDRFrame( const md4Header_t *header, int frame );
+const void	*R_STEFX_GetSplitMDRBounds( const md4Header_t *header, int frame );
 #endif
 void		R_LerpTag( orientation_t *tag, qhandle_t handle, int startFrame, int endFrame, 
 					 float frac, const char *tagName );

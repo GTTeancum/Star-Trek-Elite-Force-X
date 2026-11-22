@@ -2418,7 +2418,6 @@ function Update-EFXboxPatchPk3 {
         "--texture-mode", "all",
         "--bsp-mode", "optimized-lightmaps",
         "--bsp-maps", $BspMaps,
-        "--lightmap-boost", "2.5",
         "--max-texture-size", "128",
         "--max-player-texture-size", ([string]$MaxPlayerTextureSize),
         "--max-hud-texture-size", "128",

@@ -290,44 +290,25 @@ static void STEFX_HolomatchCopyOfficialPlayerStateToSP(playerState_t *dst,
 	dst->ping = src->ping;
 }
 
+// EF and the SP host share the byte layout of two runs of entity fields.
+// modelindex3, animation timers and the final SP-only fields are zeroed by
+// the caller when it clears the mirror. Trajectory type values need translation.
+typedef char hmStatePrefixLayout[
+	offsetof(entityState_t, modelindex3) == offsetof(stefx_hm_entity_state_t, clientNum) &&
+	offsetof(entityState_t, pos) == offsetof(stefx_hm_entity_state_t, pos) &&
+	offsetof(entityState_t, apos) == offsetof(stefx_hm_entity_state_t, apos) &&
+	offsetof(entityState_t, modelindex2) == offsetof(stefx_hm_entity_state_t, modelindex2) ? 1 : -1];
+typedef char hmStateClientLayout[
+	offsetof(entityState_t, legsAnimTimer) - offsetof(entityState_t, clientNum) ==
+	offsetof(stefx_hm_entity_state_t, torsoAnim) - offsetof(stefx_hm_entity_state_t, clientNum) ? 1 : -1];
+
 static void STEFX_HolomatchCopyOfficialStateToSP(entityState_t *dst,
 	const stefx_hm_entity_state_t *src)
 {
-	memset(dst, 0, sizeof(*dst));
-	dst->number = src->number;
-	dst->eType = src->eType;
-	dst->eFlags = src->eFlags;
+	memcpy(dst, src, offsetof(entityState_t, modelindex3));
 	dst->pos.trType = (trType_t)STEFX_OfficialTrajectoryTypeToSP(src->pos.trType);
-	dst->pos.trTime = src->pos.trTime;
-	dst->pos.trDuration = src->pos.trDuration;
-	VectorCopy(src->pos.trBase, dst->pos.trBase);
-	VectorCopy(src->pos.trDelta, dst->pos.trDelta);
 	dst->apos.trType = (trType_t)STEFX_OfficialTrajectoryTypeToSP(src->apos.trType);
-	dst->apos.trTime = src->apos.trTime;
-	dst->apos.trDuration = src->apos.trDuration;
-	VectorCopy(src->apos.trBase, dst->apos.trBase);
-	VectorCopy(src->apos.trDelta, dst->apos.trDelta);
-	dst->time = src->time;
-	dst->time2 = src->time2;
-	VectorCopy(src->origin, dst->origin);
-	VectorCopy(src->origin2, dst->origin2);
-	VectorCopy(src->angles, dst->angles);
-	VectorCopy(src->angles2, dst->angles2);
-	dst->otherEntityNum = src->otherEntityNum;
-	dst->otherEntityNum2 = src->otherEntityNum2;
-	dst->groundEntityNum = src->groundEntityNum;
-	dst->constantLight = src->constantLight;
-	dst->loopSound = src->loopSound;
-	dst->modelindex = src->modelindex;
-	dst->modelindex2 = src->modelindex2;
-	dst->clientNum = src->clientNum;
-	dst->frame = src->frame;
-	dst->solid = src->solid;
-	dst->event = src->event;
-	dst->eventParm = src->eventParm;
-	dst->powerups = src->powerups;
-	dst->weapon = src->weapon;
-	dst->legsAnim = src->legsAnim;
+	memcpy(&dst->clientNum, &src->clientNum, offsetof(entityState_t, legsAnimTimer) - offsetof(entityState_t, clientNum));
 	dst->torsoAnim = src->torsoAnim;
 }
 
@@ -371,23 +352,24 @@ static void STEFX_HolomatchCopySPStateToOfficial(stefx_hm_entity_state_t *dst,
 	dst->torsoAnim = src->torsoAnim;
 }
 
-static void STEFX_HolomatchSyncOfficialEntityToMirror(int entityNum)
-{
-	stefx_hm_entity_prefix_t *official;
-	gentity_t *mirror;
-	stefx_hm_player_state_t *officialPS;
+// A command can reenter the engine while the VM owns the live array.
+ // Preserve the last published bytes until the server asks for that entity.
+ // Player mirrors can also be read through persistent client_t pointers.
+enum { HM_FROZEN_ENTITIES = 256 };
+static stefx_hm_entity_prefix_t s_published[HM_FROZEN_ENTITIES];
+static unsigned char s_unread[HM_FROZEN_ENTITIES];
+static bool s_batchCommands;
+extern "C" volatile unsigned int g_SPXBMirrorBatch[4] = {0};
 
-	if (entityNum < 0 || entityNum >= MAX_GENTITIES)
-	{
-		return;
-	}
-	official = (stefx_hm_entity_prefix_t *)STEFX_HolomatchOfficialEntity(entityNum);
-	if (!official)
-	{
-		return;
-	}
+static void STEFX_HolomatchProjectEntity(int entityNum, const stefx_hm_entity_prefix_t *official)
+{
+    gentity_t *mirror;
+    stefx_hm_player_state_t *officialPS;
 	mirror = STEFX_HolomatchMirrorEntity(entityNum);
-	memset(mirror, 0, sizeof(*mirror));
+	// Reset every SP-only byte even when the server modified this mirror
+	// since the previous VM call.
+	mirror->s.modelindex3 = 0;
+	memset(&mirror->s.legsAnimTimer, 0, sizeof(*mirror) - offsetof(entityState_t, legsAnimTimer));
 	STEFX_HolomatchCopyOfficialStateToSP(&mirror->s, &official->s);
 	mirror->inuse = official->inuse;
 	mirror->linked = official->r.linked;
@@ -413,6 +395,37 @@ static void STEFX_HolomatchSyncOfficialEntityToMirror(int entityNum)
 		STEFX_HolomatchCopyOfficialPlayerStateToSP(&s_stefxHolomatchMirrorClientStates[entityNum], officialPS);
 		mirror->client = &s_stefxHolomatchMirrorClientStates[entityNum];
 	}
+}
+
+static void STEFX_HolomatchSyncOfficialEntityToMirror(int entityNum)
+{
+    const stefx_hm_entity_prefix_t *source=(const stefx_hm_entity_prefix_t *)STEFX_HolomatchOfficialEntity(entityNum);
+    if (!source) return;
+    if ((unsigned)entityNum < HM_FROZEN_ENTITIES) s_unread[entityNum]=0;
+    STEFX_HolomatchProjectEntity(entityNum,source);
+}
+
+extern "C" void STEFX_HolomatchReadPublishedEntity(int entityNum)
+{
+    if (s_batchCommands && (unsigned)entityNum < HM_FROZEN_ENTITIES && s_unread[entityNum]) {
+        s_unread[entityNum]=0;
+        STEFX_HolomatchProjectEntity(entityNum,&s_published[entityNum]);
+        ++g_SPXBMirrorBatch[2];
+    }
+}
+
+static void STEFX_HolomatchFlushPublished()
+{
+    for(int i=0;i<HM_FROZEN_ENTITIES;++i)
+        if(s_unread[i]) STEFX_HolomatchReadPublishedEntity(i);
+}
+
+extern "C" void STEFX_HolomatchBatchCommands(bool begin)
+{
+    if (!begin && s_batchCommands) STEFX_HolomatchFlushPublished();
+    s_batchCommands=begin;
+    if (begin && ++g_SPXBMirrorBatch[0]==1)
+        XBLog_WriteCritical("STEFX_SPLIT_MIRROR: batching world entity publication across local and bot commands");
 }
 
 static void STEFX_HolomatchSyncMirrorToOfficial(int entityNum)
@@ -462,6 +475,27 @@ static void STEFX_HolomatchSyncAllToMirror(void)
 	{
 		STEFX_HolomatchSyncOfficialEntityToMirror(i);
 	}
+}
+
+static void STEFX_HolomatchPublishCommand()
+{
+    if (!s_batchCommands) { STEFX_HolomatchSyncAllToMirror();return; }
+    unsigned int frozen=0;
+    int count=s_stefxHolomatchNumEntities;
+    if (count<0 || count>MAX_GENTITIES) count=MAX_GENTITIES;
+    for (int i=0;i<count;++i) {
+        const stefx_hm_entity_prefix_t *source=(const stefx_hm_entity_prefix_t *)STEFX_HolomatchOfficialEntity(i);
+        if (!source) continue;
+        if (i<MAX_CLIENTS || i>=HM_FROZEN_ENTITIES || source->client) {
+            STEFX_HolomatchSyncOfficialEntityToMirror(i);
+        } else {
+            // Entity owners are also referenced directly by number.
+            STEFX_HolomatchMirrorEntity(i)->s.number=source->s.number;
+            memcpy(&s_published[i],source,sizeof(*source));
+            s_unread[i]=1;++frozen;
+        }
+    }
+    ++g_SPXBMirrorBatch[1];g_SPXBMirrorBatch[3]+=frozen;
 }
 
 static void STEFX_HolomatchRefreshExport(void)
@@ -784,10 +818,12 @@ static int QDECL STEFX_HolomatchSyscall( int command, ... )
 				++g_SPXBHMSplitBotProof[8];
 			}
 #endif
+			if (s_batchCommands && execWhen == EXEC_NOW) STEFX_HolomatchFlushPublished();
 			Cbuf_ExecuteText(execWhen, text ? text : "");
 		}
 		break;
 	case STEFX_HM_G_LOCATE_GAME_DATA:
+		if (s_batchCommands) STEFX_HolomatchFlushPublished();
 		s_stefxHolomatchGentities = va_arg(args, void *);
 		s_stefxHolomatchNumEntities = va_arg(args, int);
 		s_stefxHolomatchGentitySize = va_arg(args, int);
@@ -1208,7 +1244,7 @@ static void STEFX_HolomatchClientThink( int clientNum, usercmd_t *cmd )
 	(void)cmd;
 	++g_SPXBHMClientThinkCount;
 	STEFX_HolomatchVM(7, clientNum, 0, 0);
-	STEFX_HolomatchSyncAllToMirror();
+	STEFX_HolomatchPublishCommand();
 	STEFX_HolomatchRefreshExport();
 }
 
@@ -1256,6 +1292,8 @@ game_export_t *STEFX_GetHolomatchGameAPI( game_import_t *import )
 	memset(s_stefxHolomatchMirrorStorage, 0, sizeof(s_stefxHolomatchMirrorStorage));
 	memset(s_stefxHolomatchMirrorClientStates, 0, sizeof(s_stefxHolomatchMirrorClientStates));
 	memset(&s_stefxHolomatchExport, 0, sizeof(s_stefxHolomatchExport));
+	s_batchCommands=false;
+	memset(s_unread,0,sizeof(s_unread));
 	STEFX_HolomatchBotReset();
 
 	dllEntry(STEFX_HolomatchSyscall);

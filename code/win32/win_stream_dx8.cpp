@@ -72,14 +72,13 @@ HANDLE s_QueueLen = INVALID_HANDLE_VALUE;
 
 #include "../qcommon/fixedmap.h"
 
-#pragma pack(push, 1)
 typedef struct
 {
-	unsigned char filenameFlags;
 	int offset;
 	int size;
+	char *name;
+	unsigned char filenameFlags;
 } sound_file_t;
-#pragma pack(pop)
 
 static HANDLE	soundfile	= INVALID_HANDLE_VALUE;
 static VVFixedMap< sound_file_t, unsigned int >* soundLookup = NULL;
@@ -431,9 +430,15 @@ static DWORD WINAPI _streamThread(LPVOID)
 				{
 					WaitForSingleObject(Sys_FileStreamMutex, INFINITE);
 					offset	= crap->offset + req.data[2];
-					strm->error = (SetFilePointer(soundfile, offset, 0, FILE_BEGIN) != offset) ||
-						(ReadFile(soundfile, (void*)req.data[0], req.data[1], &bytes, NULL) == 0);
+					strm->error = req.data[2] > (DWORD)crap->size ||
+						req.data[1] > (DWORD)crap->size - req.data[2] ||
+						SetFilePointer(soundfile, offset, 0, FILE_BEGIN) != offset ||
+						!ReadFile(soundfile, (void*)req.data[0], req.data[1], &bytes, NULL) ||
+						bytes != req.data[1];
 					ReleaseMutex(Sys_FileStreamMutex);
+					if (strm->error)
+						XBLog_WriteCriticalf("STEFX_AUDIO_BANK: read failed code=0x%08x offset=%d requested=%u read=%u",
+							strm->file, offset, req.data[1], bytes);
 				}
 				else
 				{
@@ -570,6 +575,18 @@ void Sys_StreamShutdown(void)
 	
 	// Remove streaming table
 	Z_Free(s_Streams);
+	if (soundLookup)
+	{
+		sound_file_t *entry;
+		while ((entry = soundLookup->Pop()) != NULL)
+		{
+			if (entry->name) Z_Free(entry->name);
+		}
+		delete soundLookup;
+		soundLookup = NULL;
+		CloseHandle(soundfile);
+		soundfile = INVALID_HANDLE_VALUE;
+	}
 }
 
 static streamHandle_t GetFreeHandle(void)
@@ -690,8 +707,17 @@ unsigned int Sys_GetSoundFileCode(const char* name)
 	strlwr(osname);
 	unsigned int code = crc32(0, (const byte *)osname, strlen(osname));
 
-	if (soundLookup && soundLookup->Find(code))
+	sound_file_t *bankEntry = soundLookup ? soundLookup->Find(code) : NULL;
+	if (bankEntry)
 	{
+		// The bank index stores CRCs only. Voice and effect routing also use
+		// the registered path, even when the optional file list is absent.
+		if (!bankEntry->name)
+		{
+			char normalized[MAX_QPATH];
+			Sys_NormalizeSoundName(name, normalized, sizeof(normalized));
+			bankEntry->name = CopyString(normalized);
+		}
 		return code;
 	}
 
@@ -717,6 +743,9 @@ unsigned int Sys_GetSoundFileCodeFlags(unsigned int code)
 
 const char *Sys_GetSoundFileCodeName(unsigned int code)
 {
+	sound_file_t *bankEntry = soundLookup ? soundLookup->Find(code) : NULL;
+	if (bankEntry)
+		return bankEntry->name;
 	loose_sound_file_t *loose = Sys_FindLooseSoundFile(code);
 	if (loose)
 	{
@@ -870,25 +899,31 @@ void Sys_StreamInitialize( void )
 
 	XBLog_Write(va("EF: Sys_StreamInitialize soundbank records=%d size=%u", numberOfRecords, (unsigned int)fileSize));
 
-	soundLookup = new VVFixedMap<sound_file_t, unsigned int>(numberOfRecords);
-
 	byte*	tempData	= (byte*)Z_Malloc(fileSize, TAG_TEMP_WORKSPACE, true, 32);
 	byte*	restore		= tempData;
 
-	DWORD	bytesRead;
-
-	ReadFile(
-		table,
-		tempData,
-		fileSize,
-		&bytesRead,
-		NULL );
-
-	if(bytesRead != fileSize)
-		Com_Error(0,"Could not read sound index file.\n");
-
+	DWORD bytesRead = 0;
+	DWORD bankBytes = GetFileSize(soundfile, NULL);
+	bool valid = bankBytes != INVALID_FILE_SIZE && bankBytes <= 0x7fffffff &&
+		tempData && ReadFile(table, tempData, fileSize, &bytesRead, NULL) && bytesRead == fileSize;
 	CloseHandle(table);
+	for (int index = 0; valid && index < numberOfRecords; ++index)
+	{
+		const byte *record = tempData + index * recordSize;
+		const DWORD offset = *(const DWORD *)(record + 4);
+		const DWORD size = *(const DWORD *)(record + 8);
+		valid = size >= 12 && offset <= bankBytes && size <= bankBytes - offset;
+	}
+	if (!valid)
+	{
+		XBLog_WriteCritical("STEFX_AUDIO_BANK: invalid bank/table pair; using sound files");
+		if (tempData) Z_Free(tempData);
+		CloseHandle(soundfile);
+		soundfile = INVALID_HANDLE_VALUE;
+		return;
+	}
 
+	soundLookup = new VVFixedMap<sound_file_t, unsigned int>(numberOfRecords);
 	for(int i = 0; i < numberOfRecords; i++)
 	{
 		unsigned int filecode	= *(unsigned int*)tempData;
@@ -901,6 +936,7 @@ void Sys_StreamInitialize( void )
 		tempData++;
 
 		sound_file_t sfile;
+		sfile.name = NULL;
 		sfile.offset	= offset;
 		sfile.size		= size;
 		sfile.filenameFlags = filenameFlags;

@@ -32,6 +32,8 @@ static void S_STEFX_SplitScreen_SetLocalListener(int slot, int entityNum, const 
 }
 #endif
 
+extern "C" void STEFX_HolomatchBatchCommands(bool begin);
+
 static qboolean s_stefxHolomatchHostActive = qfalse;
 static int s_stefxHolomatchSmokeCombatLogBudget = 24;
 static int s_stefxHolomatchSmokeMapStartTime = 0;
@@ -491,14 +493,18 @@ static void STEFX_HolomatchUpdateSplitLaunchProof(int localPlayers, int levelTim
 	g_SPXBHMPlayerSetupProof[3] = (unsigned int)levelTime;
 	for (player = 0; player < 4; ++player)
 	{
-		char cvarName[64];
+		static const char *const names[4][8] = {
+			{ "hm_model_0", "hm_skin_0", "cont_config_0", "cg_autoswitch_0", "g_autoaim_0", "cg_drawCrosshair_0", "joy_vibestate_0", "joy_pitchsensitivity_0" },
+			{ "hm_model_1", "hm_skin_1", "cont_config_1", "cg_autoswitch_1", "g_autoaim_1", "cg_drawCrosshair_1", "joy_vibestate_1", "joy_pitchsensitivity_1" },
+			{ "hm_model_2", "hm_skin_2", "cont_config_2", "cg_autoswitch_2", "g_autoaim_2", "cg_drawCrosshair_2", "joy_vibestate_2", "joy_pitchsensitivity_2" },
+			{ "hm_model_3", "hm_skin_3", "cont_config_3", "cg_autoswitch_3", "g_autoaim_3", "cg_drawCrosshair_3", "joy_vibestate_3", "joy_pitchsensitivity_3" },
+		};
 		const char *value;
 		unsigned int hash;
 		int base = 4 + player * 9;
 		int index;
 
-		Com_sprintf(cvarName, sizeof(cvarName), "hm_model_%d", player);
-		value = Cvar_VariableString(cvarName);
+		value = Cvar_VariableString(names[player][0]);
 		hash = 2166136261u;
 		for (index = 0; value && value[index]; ++index)
 		{
@@ -507,8 +513,7 @@ static void STEFX_HolomatchUpdateSplitLaunchProof(int localPlayers, int levelTim
 		}
 		g_SPXBHMPlayerSetupProof[base + 0] = value && value[0] ? hash : 0;
 
-		Com_sprintf(cvarName, sizeof(cvarName), "hm_skin_%d", player);
-		value = Cvar_VariableString(cvarName);
+		value = Cvar_VariableString(names[player][1]);
 		hash = 2166136261u;
 		for (index = 0; value && value[index]; ++index)
 		{
@@ -517,18 +522,12 @@ static void STEFX_HolomatchUpdateSplitLaunchProof(int localPlayers, int levelTim
 		}
 		g_SPXBHMPlayerSetupProof[base + 1] = value && value[0] ? hash : 0;
 
-		Com_sprintf(cvarName, sizeof(cvarName), "cont_config_%d", player);
-		g_SPXBHMPlayerSetupProof[base + 2] = (unsigned int)Cvar_VariableIntegerValue(cvarName);
-		Com_sprintf(cvarName, sizeof(cvarName), "cg_autoswitch_%d", player);
-		g_SPXBHMPlayerSetupProof[base + 3] = (unsigned int)Cvar_VariableIntegerValue(cvarName);
-		Com_sprintf(cvarName, sizeof(cvarName), "g_autoaim_%d", player);
-		g_SPXBHMPlayerSetupProof[base + 4] = (unsigned int)Cvar_VariableIntegerValue(cvarName);
-		Com_sprintf(cvarName, sizeof(cvarName), "cg_drawCrosshair_%d", player);
-		g_SPXBHMPlayerSetupProof[base + 5] = (unsigned int)Cvar_VariableIntegerValue(cvarName);
-		Com_sprintf(cvarName, sizeof(cvarName), "joy_vibestate_%d", player);
-		g_SPXBHMPlayerSetupProof[base + 6] = (unsigned int)(Cvar_VariableIntegerValue(cvarName) ? 1 : 0);
-		Com_sprintf(cvarName, sizeof(cvarName), "joy_pitchsensitivity_%d", player);
-		g_SPXBHMPlayerSetupProof[base + 7] = (unsigned int)(Cvar_VariableValue(cvarName) < 0.0f ? 1 : 0);
+		g_SPXBHMPlayerSetupProof[base + 2] = (unsigned int)Cvar_VariableIntegerValue(names[player][2]);
+		g_SPXBHMPlayerSetupProof[base + 3] = (unsigned int)Cvar_VariableIntegerValue(names[player][3]);
+		g_SPXBHMPlayerSetupProof[base + 4] = (unsigned int)Cvar_VariableIntegerValue(names[player][4]);
+		g_SPXBHMPlayerSetupProof[base + 5] = (unsigned int)Cvar_VariableIntegerValue(names[player][5]);
+		g_SPXBHMPlayerSetupProof[base + 6] = (unsigned int)(Cvar_VariableIntegerValue(names[player][6]) ? 1 : 0);
+		g_SPXBHMPlayerSetupProof[base + 7] = (unsigned int)(Cvar_VariableValue(names[player][7]) < 0.0f ? 1 : 0);
 		g_SPXBHMPlayerSetupProof[base + 8] = player < localPlayers ? 1u : 0u;
 	}
 }
@@ -1802,8 +1801,17 @@ void STEFX_HolomatchHostRunFrame(int levelTime)
 	STEFX_HolomatchLogControlRouting(humanPlayers);
 #endif
 	STEFX_HolomatchEnsureLocalClients(humanPlayers, levelTime);
-	STEFX_HolomatchRunLocalUsercmds(humanPlayers, levelTime);
-	STEFX_HolomatchBotFrame(levelTime);
+	if (viewportPlayers>=2) {
+        struct CommandBatch {
+            CommandBatch() { STEFX_HolomatchBatchCommands(true); }
+            ~CommandBatch() { STEFX_HolomatchBatchCommands(false); }
+        } batch;
+        STEFX_HolomatchRunLocalUsercmds(humanPlayers,levelTime);
+        STEFX_HolomatchBotFrame(levelTime);
+    } else {
+        STEFX_HolomatchRunLocalUsercmds(humanPlayers,levelTime);
+        STEFX_HolomatchBotFrame(levelTime);
+    }
 	STEFX_HolomatchGameFrame(levelTime);
 	STEFX_HolomatchPinSmokeP1View(levelTime);
 	STEFX_HolomatchUpdateSplitRefdefs(viewportPlayers, levelTime);

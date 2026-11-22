@@ -91,7 +91,13 @@ int	SV_NumForGentity( gentity_t *ent ) {
 	return num;
 }
 */
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
+extern "C" void STEFX_HolomatchReadPublishedEntity(int entityNum);
+#endif
 gentity_t	*SV_GentityNum( int num ) {
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
+	STEFX_HolomatchReadPublishedEntity(num);
+#endif
 	gentity_t	*ent;
 
 	assert (num >=0);

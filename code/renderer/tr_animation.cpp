@@ -5,7 +5,7 @@
 
 #include "tr_local.h"
 #include "MatComp.h"
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 #include <xmmintrin.h>
 #endif
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
@@ -44,8 +44,13 @@ static int R_ACullModel( md4Header_t *header, trRefEntity_t *ent ) {
 	{
 		frameSize = (int)( &((md4CompFrame_t *)0)->bones[ tr.currentModel->md4->numBones ] );		
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-		newFrame = (md4Frame_t *)R_STEFX_GetMDRFrame(header, ent->e.frame);
-		oldFrame = (md4Frame_t *)R_STEFX_GetMDRFrame(header, ent->e.oldframe);
+		if (tr.viewParms.stefxSplitView) {
+			newFrame = (md4Frame_t *)R_STEFX_GetSplitMDRBounds(header, ent->e.frame);
+			oldFrame = (md4Frame_t *)R_STEFX_GetSplitMDRBounds(header, ent->e.oldframe);
+		} else {
+			newFrame = (md4Frame_t *)R_STEFX_GetMDRFrame(header, ent->e.frame);
+			oldFrame = (md4Frame_t *)R_STEFX_GetMDRFrame(header, ent->e.oldframe);
+		}
 #else
 		newFrame = (md4Frame_t *)((byte *)header - header->ofsFrames + ent->e.frame * frameSize );
 		oldFrame = (md4Frame_t *)((byte *)header - header->ofsFrames + ent->e.oldframe * frameSize );
@@ -178,7 +183,9 @@ static int R_AComputeFogNum( md4Header_t *header, trRefEntity_t *ent ) {
 	{
 		frameSize = (int)( &((md4CompFrame_t *)0)->bones[ header->numBones ] );		
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-		frame = (md4Frame_t *)R_STEFX_GetMDRFrame(header, ent->e.frame);
+		frame = (md4Frame_t *)(tr.viewParms.stefxSplitView
+			? R_STEFX_GetSplitMDRBounds(header, ent->e.frame)
+			: R_STEFX_GetMDRFrame(header, ent->e.frame));
 #else
 		frame = (md4Frame_t *)((byte *)header - header->ofsFrames + ent->e.frame * frameSize );
 #endif
@@ -230,6 +237,63 @@ static int R_AComputeFogNum( md4Header_t *header, trRefEntity_t *ent ) {
 R_AddAnimSurfaces
 ==============
 */
+static shader_t *R_FindAnimSurfaceShader(trRefEntity_t *ent, md4Surface_t *surface, shader_t *cust_shader) {
+    shader_t *shader;
+		if ( ent->e.customShader ) {
+			shader = cust_shader;
+		} else if ( ent->e.customSkin > 0 && ent->e.customSkin < tr.numSkins ) {
+			skin_t *skin;
+			int		j;
+
+			skin = R_GetSkinByHandle( ent->e.customSkin );
+
+			// match the surface name to something in the skin file
+			shader = tr.defaultShader;
+			for ( j = 0 ; j < skin->numSurfaces ; j++ ) {
+				// the names have both been lowercased
+				if ( !strcmp( skin->surfaces[j]->name, surface->name ) ) {
+					shader = skin->surfaces[j]->shader;
+					break;
+				}
+			}
+		} else {
+			shader = R_GetShaderByHandle( surface->shaderIndex );
+		}
+    return shader;
+}
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+struct splitActorMaterial_t {
+    unsigned int scene;
+    const md4Surface_t *surface;
+    qhandle_t skin;
+    shader_t *shader;
+};
+static splitActorMaterial_t s_splitActorMaterials[256];
+static unsigned int s_splitActorScene;
+extern "C" volatile unsigned int g_SPXBSplitActorMaterials[2]={0};
+extern "C" void STEFX_BeginSplitActorScene() {
+    if (++s_splitActorScene==0) {
+        memset(s_splitActorMaterials,0,sizeof(s_splitActorMaterials));++s_splitActorScene;
+    }
+}
+#endif
+static shader_t *R_AnimSurfaceShader(trRefEntity_t *ent,md4Surface_t *surface,shader_t *custom) {
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+    if (tr.viewParms.stefxSplitView && !ent->e.customShader && ent->e.customSkin>0 && ent->e.customSkin<tr.numSkins) {
+        unsigned int id=(unsigned int)surface;
+        splitActorMaterial_t &slot=s_splitActorMaterials[((id>>4)^(id>>12)^ent->e.customSkin)&255];
+        if (slot.scene==s_splitActorScene && slot.surface==surface && slot.skin==ent->e.customSkin) {
+            ++g_SPXBSplitActorMaterials[0];return slot.shader;
+        }
+        slot.scene=s_splitActorScene;slot.surface=surface;slot.skin=ent->e.customSkin;
+        slot.shader=R_FindAnimSurfaceShader(ent,surface,custom);
+        if (++g_SPXBSplitActorMaterials[1]==1) XBLog_WriteCritical("STEFX_SPLIT_ACTORS: sharing resolved skin materials across views");
+        return slot.shader;
+    }
+#endif
+    return R_FindAnimSurfaceShader(ent,surface,custom);
+}
+
 void R_AddAnimSurfaces( trRefEntity_t *ent ) {
 	md4Header_t		*header;
 	md4Surface_t	*surface;
@@ -321,26 +385,7 @@ void R_AddAnimSurfaces( trRefEntity_t *ent ) {
 
 	surface = (md4Surface_t *)( (byte *)lod + lod->ofsSurfaces );
 	for ( i = 0 ; i < lod->numSurfaces ; i++ ) {
-		if ( ent->e.customShader ) {
-			shader = cust_shader;
-		} else if ( ent->e.customSkin > 0 && ent->e.customSkin < tr.numSkins ) {
-			skin_t *skin;
-			int		j;
-			
-			skin = R_GetSkinByHandle( ent->e.customSkin );
-			
-			// match the surface name to something in the skin file
-			shader = tr.defaultShader;
-			for ( j = 0 ; j < skin->numSurfaces ; j++ ) {
-				// the names have both been lowercased
-				if ( !strcmp( skin->surfaces[j]->name, surface->name ) ) {
-					shader = skin->surfaces[j]->shader;
-					break;
-				}
-			}
-		} else {
-			shader = R_GetShaderByHandle( surface->shaderIndex );
-		}
+        shader = R_AnimSurfaceShader(ent,surface,cust_shader);
 		// we will add shadows even if the main object isn't visible in the view
 
 		// stencil shadows can't do personal models unless I polyhedron clip
@@ -433,9 +478,49 @@ static void RB_STEFX_ProfileMdrPaletteCache( void ) {
 }
 #endif
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+struct splitBoneColumns_t { __m128 x,y,z,t; unsigned int epoch; };
+static splitBoneColumns_t s_columns[MD4_MAX_BONES];
+static const md4Bone_t *s_columnSource;
+static unsigned int s_columnEpoch;
+extern "C" volatile unsigned int g_SPXBSplitSkinColumns[2]={0};
+static __forceinline void RB_StoreSkinThree(float *dest,__m128 value) {
+	_mm_storel_pi((__m64*)dest,value);
+	_mm_store_ss(dest+2,_mm_shuffle_ps(value,value,_MM_SHUFFLE(2,2,2,2)));
+}
+static __forceinline void RB_SkinSplitVertex(const md4Vertex_t *v,const md4Bone_t *palette,
+	float *position,float *normal) {
+	__m128 pSum=_mm_setzero_ps(),nSum=_mm_setzero_ps();
+	const __m128 nx=_mm_set1_ps(v->normal[0]),ny=_mm_set1_ps(v->normal[1]),nz=_mm_set1_ps(v->normal[2]);
+	for (int k=0;k<v->numWeights;++k) {
+		const md4Weight_t *w=&v->weights[k];
+        splitBoneColumns_t &bone=s_columns[w->boneIndex];
+        if (bone.epoch!=s_columnEpoch) {
+            __m128 x=_mm_loadu_ps(palette[w->boneIndex].matrix[0]);
+            __m128 y=_mm_loadu_ps(palette[w->boneIndex].matrix[1]);
+            __m128 z=_mm_loadu_ps(palette[w->boneIndex].matrix[2]),t=_mm_setzero_ps();
+            _MM_TRANSPOSE4_PS(x,y,z,t);
+            bone.x=x; bone.y=y; bone.z=z; bone.t=t; bone.epoch=s_columnEpoch;
+            ++g_SPXBSplitSkinColumns[1];
+        }
+        const __m128 x=bone.x,y=bone.y,z=bone.z,t=bone.t;
+		__m128 p=_mm_mul_ps(x,_mm_set1_ps(w->offset[0]));
+		p=_mm_add_ps(p,_mm_mul_ps(y,_mm_set1_ps(w->offset[1])));
+		p=_mm_add_ps(p,_mm_mul_ps(z,_mm_set1_ps(w->offset[2])));
+		p=_mm_add_ps(p,t);
+		__m128 n=_mm_mul_ps(x,nx);
+		n=_mm_add_ps(n,_mm_mul_ps(y,ny)); n=_mm_add_ps(n,_mm_mul_ps(z,nz));
+		const __m128 weight=_mm_set1_ps(w->boneWeight);
+		pSum=_mm_add_ps(pSum,_mm_mul_ps(p,weight));
+		nSum=_mm_add_ps(nSum,_mm_mul_ps(n,weight));
+	}
+	RB_StoreSkinThree(position,pSum);
+	RB_StoreSkinThree(normal,nSum);
+}
+#endif
+
 static md4Bone_t *RB_GetAnimBonePalette( md4Header_t *header, float frontlerp, float backlerp,
-	md4Frame_t *frame, md4Frame_t *oldFrame, md4CompFrame_t *cframe, md4CompFrame_t *coldFrame,
-	qboolean compressed ) {
+	md4Frame_t *frame, md4Frame_t *oldFrame, qboolean compressed ) {
 	stefxMdrPaletteCache_t *cache;
 	qboolean sharedIdentity = qfalse;
 	int i, j;
@@ -451,7 +536,10 @@ static md4Bone_t *RB_GetAnimBonePalette( md4Header_t *header, float frontlerp, f
 		++s_stefxMdrPaletteBypasses;
 		s_stefxMdrPaletteCurrentGeneration = 0; // immutable uncompressed frame
 #endif
-		return frame->bones;
+		#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	s_columnSource=NULL;
+#endif
+	return frame->bones;
 	}
 
 #if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
@@ -493,7 +581,10 @@ static md4Bone_t *RB_GetAnimBonePalette( md4Header_t *header, float frontlerp, f
 	cache->generation = s_stefxMdrPaletteGeneration;
 	s_stefxMdrPaletteCurrentGeneration = cache->generation;
 #endif
-	cache->valid = qtrue;
+	#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	s_columnSource=NULL;
+#endif
+	cache->valid = qfalse;
 	cache->sharedIdentity = sharedIdentity;
 	cache->entity = backEnd.currentEntity;
 	cache->entityNumber = backEnd.currentEntity->e.number;
@@ -504,6 +595,20 @@ static md4Bone_t *RB_GetAnimBonePalette( md4Header_t *header, float frontlerp, f
 	cache->renderTime = backEnd.refdef.time;
 
 	if ( compressed ) {
+		// The palette owns its bone matrices. A cache hit needs no decoded
+		// frame, and an uninterpolated pose needs only the current frame.
+		const md4CompFrame_t *cframe, *coldFrame = NULL;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+		cframe = (const md4CompFrame_t *)R_STEFX_GetMDRFrame(header, backEnd.currentEntity->e.frame);
+		if (backlerp)
+			coldFrame = (const md4CompFrame_t *)R_STEFX_GetMDRFrame(header, backEnd.currentEntity->e.oldframe);
+#else
+		const int stride = (int)(&((md4CompFrame_t *)0)->bones[header->numBones]);
+		const byte *frames = (const byte *)header - header->ofsFrames;
+		cframe = (const md4CompFrame_t *)(frames + backEnd.currentEntity->e.frame * stride);
+		if (backlerp)
+			coldFrame = (const md4CompFrame_t *)(frames + backEnd.currentEntity->e.oldframe * stride);
+#endif
 		for ( i = 0; i < header->numBones; ++i ) {
 			if ( !backlerp ) {
 				MC_UnCompress( cache->bones[i].matrix, cframe->bones[i].Comp );
@@ -523,6 +628,7 @@ static md4Bone_t *RB_GetAnimBonePalette( md4Header_t *header, float frontlerp, f
 		}
 	}
 
+	cache->valid = qtrue;
 	return cache->bones;
 }
 
@@ -933,6 +1039,12 @@ static void R_STEFX_VerifySkinSimd(const md4Vertex_t *v,const md4Bone_t *palette
 #endif
 #endif
 
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+bool STEFX_PrepareActorMesh(md4Surface_t *, const md4Bone_t *, int);
+void STEFX_FinishActorMesh();
+extern "C" volatile unsigned int g_SPXBHMSplitRenderArmedPlayers;
+#endif
+
 void RB_SurfaceAnim( md4Surface_t *surface ) {
 	int				j, k;
 	float			frontlerp, backlerp;
@@ -945,8 +1057,6 @@ void RB_SurfaceAnim( md4Surface_t *surface ) {
 	md4Header_t		*header;
 	md4Frame_t		*frame=0;
 	md4Frame_t		*oldFrame=0;
-	md4CompFrame_t	*cframe=0;
-	md4CompFrame_t	*coldFrame=0;
 	int				frameSize;
 	qboolean		compressed;
 
@@ -960,21 +1070,8 @@ void RB_SurfaceAnim( md4Surface_t *surface ) {
 	}
 	header = (md4Header_t *)((byte *)surface + surface->ofsHeader);
 
-	if (header->ofsFrames<0) // Compressed
-	{
-		compressed = qtrue;
-		frameSize = (int)( &((md4CompFrame_t *)0)->bones[ header->numBones ] );		
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-		cframe = (md4CompFrame_t *)R_STEFX_GetMDRFrame(header, backEnd.currentEntity->e.frame);
-		coldFrame = (md4CompFrame_t *)R_STEFX_GetMDRFrame(header, backEnd.currentEntity->e.oldframe);
-#else
-		cframe = (md4CompFrame_t *)((byte *)header - header->ofsFrames + backEnd.currentEntity->e.frame * frameSize );
-		coldFrame = (md4CompFrame_t *)((byte *)header - header->ofsFrames + backEnd.currentEntity->e.oldframe * frameSize );
-#endif
-	}
-	else
-	{
-		compressed = qfalse;
+	compressed = header->ofsFrames < 0 ? qtrue : qfalse;
+	if ( !compressed ) {
 		frameSize = (int)( &((md4Frame_t *)0)->bones[ header->numBones ] );
 		frame = (md4Frame_t *)((byte *)header + header->ofsFrames + 
 			backEnd.currentEntity->e.frame * frameSize );
@@ -1005,8 +1102,21 @@ void RB_SurfaceAnim( md4Surface_t *surface ) {
 	if (mdrSample) { s_mdrProofIndexCycles += STEFX_XboxElapsedCycles(mdrPhaseStart); mdrPhaseStart = STEFX_XboxReadTsc(); }
 #endif
 
-	bonePtr = RB_GetAnimBonePalette( header, frontlerp, backlerp, frame, oldFrame,
-		cframe, coldFrame, compressed );
+	bonePtr = RB_GetAnimBonePalette( header, frontlerp, backlerp, frame, oldFrame, compressed );
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+    if (baseVertex == 0 && baseIndex == 0 && backEnd.viewParms.stefxSplitView &&
+        backEnd.viewParms.stefxSplitThreePlusEconomy && g_SPXBHMSplitRenderArmedPlayers == 4 &&
+        STEFX_PrepareActorMesh(surface, bonePtr, header->numBones)) {
+        shader_t *shader = tess.shader;
+        const int fog = tess.fogNum;
+        tess.numVertexes = surface->numVerts;
+        RB_EndSurface();
+        STEFX_FinishActorMesh();
+        RB_BeginSurface(shader, fog);
+        return;
+    }
+#endif
+
 #if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS) && defined(STEFX_ELITE_FORCE_SP)
 	if (mdrSample) { s_mdrProofPaletteCycles += STEFX_XboxElapsedCycles(mdrPhaseStart); mdrPhaseStart = STEFX_XboxReadTsc(); }
 #endif
@@ -1047,10 +1157,31 @@ void RB_SurfaceAnim( md4Surface_t *surface ) {
 	}
 #endif
 	numVerts = surface->numVerts;
-	v = (md4Vertex_t *) ((byte *)surface + surface->ofsVerts);
+    v = (md4Vertex_t *) ((byte *)surface + surface->ofsVerts);
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
 	const int coopSimdMode=R_STEFX_CoopMdrSimdMode();
 	if (coopSimdMode) ++g_SPXBCoopMdrSimd[1];
+#endif
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+    if (backEnd.viewParms.stefxSplitView
+#ifndef STEFX_SP_HOSTED_MP
+        && !coopSimdMode
+#endif
+        ) {
+        if (s_columnSource!=bonePtr) {
+            s_columnSource=bonePtr;
+            if (!++s_columnEpoch) {memset(s_columns,0,sizeof(s_columns));++s_columnEpoch;}
+        }
+        if (!g_SPXBSplitSkinColumns[0]) XBLog_WriteCritical("STEFX_SPLIT_SKIN: preparing one column matrix per used bone and pose");
+        g_SPXBSplitSkinColumns[0]+=numVerts;
+        for(j=0;j<numVerts;++j) {
+            RB_SkinSplitVertex(v,bonePtr,tess.xyz[baseVertex+j],tess.normal[baseVertex+j]);
+            memcpy(tess.texCoords[baseVertex+j][0],v->texCoords,8);
+            v=(md4Vertex_t*)&v->weights[v->numWeights];
+        }
+    } else
+#endif
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
 	if (coopSimdMode==1) {
 		for (j=0;j<numVerts;++j) {
 			R_STEFX_SkinVertexSimd(v,bonePtr,tess.xyz[baseVertex+j],tess.normal[baseVertex+j]);

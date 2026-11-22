@@ -65,8 +65,9 @@ void XBLF(const char*,...) {}
 // SETTINGS_CODE
 
 typedef int qboolean;
+typedef int fakeAscii_t;
 enum { qfalse=0, qtrue=1, CT_WHITE=0, EF_FRONTEND_FONT_BIG=0, EF_FRONTEND_FONT_MEDIUM=1,
-       UI_CENTER=0, A_JOY9=9, A_JOY14=14, A_JOY16=16, LEFT=100, RIGHT=101,
+       UI_CENTER=0, A_JOY5=5, A_JOY6, A_JOY7, A_JOY8, A_JOY9, A_JOY13=13, A_JOY14, A_JOY15, A_JOY16, LEFT=100, RIGHT=101,
        UP=102, DOWN=103, ACCEPT=104, BACK=105 };
 const float EF_PS2_VIEW_W=1920, EF_PS2_VIEW_H=899;
 float colorTable[1][4]={{1,1,1,1}}, s_ps2Gold[4]={1,1,0,1}, s_ps2MapGold[4]={1,1,0,1};
@@ -153,7 +154,7 @@ cvar_t *Cvar_Get(const char *name,const char*,int) {
     integerCvars[name].integer=Cvar_VariableIntegerValue(name);
     return &integerCvars[name];
 }
-qboolean STEFX_CoopLowResolution() { return qfalse; }
+static bool s_xboxPillarbox;
 
 // SAFE_AREA_CODE
 
@@ -167,10 +168,20 @@ void TestCalibrationViewport() {
     s_screen=EF_SCREEN_VIDEO;
     STEFX_GetSafeArea(&left,&top,&right,&bottom);
     CHECK(left==0 && top==0 && right==0 && bottom==0);
+    s_xboxPillarbox=true;
+    STEFX_GetSafeArea(&left,&top,&right,&bottom);
+    CHECK(left==80 && top==0 && right==80 && bottom==0);
+    s_xboxPillarbox=false;
     CHECK(Cvar_VariableValue("stefx_safeAreaLeft")==8);
     s_active=qfalse;
     STEFX_GetSafeArea(&left,&top,&right,&bottom);
     CHECK(left==8 && top==6 && right==8 && bottom==6);
+    glConfig.vidWidth=1280;
+    glConfig.vidHeight=720;
+    STEFX_GetSafeArea(&left,&top,&right,&bottom);
+    CHECK(left==16 && top==9 && right==16 && bottom==9);
+    glConfig.vidWidth=640;
+    glConfig.vidHeight=480;
 }
 
 void InstallSigned(const void *data,DWORD n) {
@@ -236,6 +247,7 @@ void TestMenus() {
     CHECK(s_videoSafeLeft==8 && s_videoSafeTop==6 && s_videoSafeRight==0 && s_videoSafeBottom==0);
     for(int i=0;i<100;++i) { EFFe_HandleVideoKey(RIGHT); EFFe_HandleVideoKey(DOWN); }
     CHECK(s_videoSafeLeft==96 && s_videoSafeTop==72);
+    CHECK(IN_STEFX_IsFrontendButton(A_JOY9)); // Physical WHITE must reach the raw frontend queue.
     EFFe_HandleVideoKey(A_JOY9); CHECK(s_videoTrilinear);
     before=saves; EFFe_HandleVideoKey(BACK); CHECK(saves==before);
     CHECK(Cvar_VariableValue("stefx_safeAreaLeft")==0);

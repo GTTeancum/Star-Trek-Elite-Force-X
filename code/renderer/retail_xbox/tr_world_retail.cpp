@@ -415,12 +415,83 @@ static bool tr_drawingAutoMap = false;
 #endif
 static float g_playerHeight = 0.0f;
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+struct splitFaceBounds_t {
+	const srfSurfaceFace_t *face;
+	short limits[2][3];
+};
+
+static const int SPLIT_FACE_CACHE_SIZE = 2048;
+static splitFaceBounds_t *s_splitFaceBounds;
+static bool s_splitFaceAllocAttempted;
+extern "C" volatile unsigned int g_SPXBSplitFaceCull[3] = {0}; // tests, fills, rejected
+
+void R_STEFX_ResetSplitFaceBounds(void) {
+	free(s_splitFaceBounds);
+	s_splitFaceBounds = NULL;
+	s_splitFaceAllocAttempted = false;
+	memset((void *)g_SPXBSplitFaceCull, 0, sizeof(g_SPXBSplitFaceCull));
+}
+
+static bool R_SplitFaceOutsideFrustum(const msurface_t *surface, int planeBits) {
+	const shader_t *shader = surface->shader;
+	if (*surface->data != SF_FACE || shader->sort != SS_OPAQUE || shader->numDeforms ||
+		shader->sky || shader->remappedShader || r_nocull->integer || r_shownormals->integer ||
+		r_showtris->integer || tr.viewParms.isPortal) return false;
+	for (int pass = 0; pass < shader->numUnfoggedPasses; ++pass) {
+		const shaderStage_t &stage = shader->stages[pass];
+		if (stage.ss) return false;
+	}
+	if (!s_splitFaceBounds) {
+		if (s_splitFaceAllocAttempted) return false;
+		s_splitFaceAllocAttempted = true;
+		s_splitFaceBounds = (splitFaceBounds_t *)calloc(SPLIT_FACE_CACHE_SIZE, sizeof(splitFaceBounds_t));
+		XBLog_WriteCriticalf("STEFX_SPLIT_FACES: bounds cache bytes=%u", s_splitFaceBounds ?
+			(unsigned int)(SPLIT_FACE_CACHE_SIZE * sizeof(splitFaceBounds_t)) : 0u);
+		if (!s_splitFaceBounds) return false;
+	}
+	const srfSurfaceFace_t *face = (const srfSurfaceFace_t *)surface->data;
+	const unsigned int index = (unsigned int)(surface - tr.world->surfaces);
+	splitFaceBounds_t &entry = s_splitFaceBounds[index % SPLIT_FACE_CACHE_SIZE];
+	if (entry.face != face) {
+		if (!face->numPoints) return false;
+		const int stride = NEXT_SURFPOINT(face->flags);
+		const short *point = (const short *)face->srfPoints;
+		for (int axis = 0; axis < 3; ++axis) entry.limits[0][axis] = entry.limits[1][axis] = point[axis];
+		for (int v = 1; v < face->numPoints; ++v) {
+			point += stride;
+			for (int axis = 0; axis < 3; ++axis) {
+				if (point[axis] < entry.limits[0][axis]) entry.limits[0][axis] = point[axis];
+				if (point[axis] > entry.limits[1][axis]) entry.limits[1][axis] = point[axis];
+			}
+		}
+		entry.face = face;
+		++g_SPXBSplitFaceCull[1];
+	}
+	++g_SPXBSplitFaceCull[0];
+	for (int p = 0; p < 4; ++p) {
+		if (!(planeBits & (1 << p))) continue;
+		const cplane_t &plane = tr.viewParms.frustum[p];
+		const float reach = plane.normal[0] * entry.limits[!(plane.signbits & 1)][0] +
+			plane.normal[1] * entry.limits[!(plane.signbits & 2)][1] +
+			plane.normal[2] * entry.limits[!(plane.signbits & 4)][2];
+		// All triangle vertices lie behind this plane. Keep a world unit of
+		// slack at the viewport edge for projection and rasterization rounding.
+		if (reach < plane.dist - 1.0f) {
+			++g_SPXBSplitFaceCull[2];
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+
 /*
 ======================
 R_AddWorldSurface
 ======================
 */
-static void R_AddWorldSurface( msurface_t *surf, int dlightBits, qboolean noViewCount = qfalse )
+static void R_AddWorldSurface( msurface_t *surf, int dlightBits, qboolean noViewCount = qfalse, int splitPlaneBits = 0 )
 {
 #if defined(_XBOX) && defined(STEFX_PVS_DIAGNOSTICS)
 	int stefxProbeSurfaceIndex = -1;
@@ -506,6 +577,9 @@ static void R_AddWorldSurface( msurface_t *surf, int dlightBits, qboolean noView
 		return;
 	}
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	if (splitPlaneBits && R_SplitFaceOutsideFrustum(surf, splitPlaneBits)) return;
+#endif
 	// check for dlighting
 	if ( dlightBits ) {
 		dlightBits = R_DlightSurface( surf, dlightBits );
@@ -1744,11 +1818,17 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 		leaf = (mleaf_s*)node;
 		mark = tr.world->marksurfaces + leaf->firstMarkSurfNum;
 		c = leaf->nummarksurfaces;
+		const int splitPlaneBits =
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+			tr.viewParms.stefxSplitView ? planeBits : 0;
+#else
+			0;
+#endif
 		while (c--) {
 			// the surface may have already been added if it
 			// spans multiple leafs
 			surf = *mark;
-			R_AddWorldSurface( surf, dlightBits );
+			R_AddWorldSurface( surf, dlightBits, qfalse, splitPlaneBits );
 			mark++;
 		}
 	}
@@ -1868,8 +1948,6 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 	int stefxProbeWordIndex;
 	qboolean stefxProbePrimary;
 #endif
-	static int stefxLastIgnorePvs = -1;
-	static int stefxLastIgnoreAreaMask = -1;
 
 	// lockpvs lets designers walk around to determine the
 	// extent of the current pvs
@@ -1896,17 +1974,14 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 	// if the cluster is the same and the area visibility matrix
 	// hasn't changed, we don't need to mark everything again
 
-	if (STEFX_ReuseSplitVisibility(cluster, stefxIgnorePvs, stefxIgnoreAreaMask)) return;
-	if ( !g_SPXBSplitVisibility[0] && tr.viewCluster == cluster && !tr.refdef.areamaskModified &&
-		 stefxIgnorePvs == stefxLastIgnorePvs &&
-		 stefxIgnoreAreaMask == stefxLastIgnoreAreaMask ) {
+	if (STEFX_ReuseSplitVisibility(cluster, stefxIgnorePvs, stefxIgnoreAreaMask) ||
+		(!g_SPXBSplitVisibility[0] && !tr.refdef.areamaskModified && !lookingForWorstLeaf &&
+		 !tr.viewParms.isPortal && STEFX_InstalledVisibilityMatches(cluster, stefxIgnorePvs, stefxIgnoreAreaMask))) {
 		return;
 	}
 
 	tr.visCount++;
 	tr.viewCluster = cluster;
-	stefxLastIgnorePvs = stefxIgnorePvs;
-	stefxLastIgnoreAreaMask = stefxIgnoreAreaMask;
 
 	if ( r_novis->integer || tr.viewCluster == -1 ) {
 		for (i=0 ; i<tr.world->numnodes ; i++) {
@@ -1969,45 +2044,54 @@ void R_MarkLeaves (mleaf_s *leafOverride) {
 	stefxProbeInvalid = 0;
 #endif
 	
-	for (i=0,leaf=tr.world->leafs ; i<tr.world->numleafs ; i++, leaf++) {
-		cluster = leaf->cluster;
-		if ( cluster < 0 || cluster >= tr.world->numClusters ) {
-#if defined(STEFX_PVS_DIAGNOSTICS)
-			stefxProbeInvalid++;
-#endif
-			continue;
+	const bool useLeafBlocks = STEFX_UseSplitLeafBlocks(stefxIgnorePvs);
+	int end = tr.world->numleafs;
+	for (int first = 0; first < tr.world->numleafs; first = end) {
+		if (useLeafBlocks) {
+			end = first + SPLIT_LEAF_BLOCK_SIZE;
+			if (end > tr.world->numleafs) end = tr.world->numleafs;
+			if (STEFX_SplitLeafBlockHidden(first, vis)) continue;
 		}
-
-		// check general pvs
-		if ( !stefxIgnorePvs && !(vis[cluster>>3] & (1<<(cluster&7))) ) {
+		for (i=first,leaf=tr.world->leafs+first ; i<end ; i++, leaf++) {
+			cluster = leaf->cluster;
+			if ( cluster < 0 || cluster >= tr.world->numClusters ) {
 #if defined(STEFX_PVS_DIAGNOSTICS)
-			stefxProbePvsRejected++;
+				stefxProbeInvalid++;
 #endif
-			continue;
+				continue;
+			}
+
+			// check general pvs
+			if ( !stefxIgnorePvs && !(vis[cluster>>3] & (1<<(cluster&7))) ) {
+#if defined(STEFX_PVS_DIAGNOSTICS)
+				stefxProbePvsRejected++;
+#endif
+				continue;
+			}
+
+			// check for door connection
+			if (!lookingForWorstLeaf &&
+				   !stefxIgnoreAreaMask &&
+				   leaf->area >= 0 &&
+				   (tr.refdef.areamask[leaf->area>>3] & (1<<(leaf->area&7)) ) ) {
+#if defined(STEFX_PVS_DIAGNOSTICS)
+				stefxProbeAreaRejected++;
+#endif
+				continue;		// not visible
+			}
+#if defined(STEFX_PVS_DIAGNOSTICS)
+			stefxProbeMarked++;
+#endif
+
+			parent = (mnode_t*)leaf;
+			assert(leaf->contents != -1);
+			do {
+				if (parent->visframe == tr.visCount)
+					break;
+				parent->visframe = tr.visCount;
+				parent = parent->parent;
+			} while (parent);
 		}
-
-		// check for door connection
-		if (!lookingForWorstLeaf &&
-			   !stefxIgnoreAreaMask &&
-			   leaf->area >= 0 &&
-			   (tr.refdef.areamask[leaf->area>>3] & (1<<(leaf->area&7)) ) ) {
-#if defined(STEFX_PVS_DIAGNOSTICS)
-			stefxProbeAreaRejected++;
-#endif
-			continue;		// not visible
-		}
-#if defined(STEFX_PVS_DIAGNOSTICS)
-		stefxProbeMarked++;
-#endif
-
-		parent = (mnode_t*)leaf;
-		assert(leaf->contents != -1);
-		do {
-			if (parent->visframe == tr.visCount)
-				break;
-			parent->visframe = tr.visCount;
-			parent = parent->parent;
-		} while (parent);
 	}
 	STEFX_RecordSplitVisibility(tr.viewCluster, stefxIgnorePvs, stefxIgnoreAreaMask);
 #if defined(STEFX_PVS_DIAGNOSTICS)

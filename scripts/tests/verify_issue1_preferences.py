@@ -37,7 +37,9 @@ def main():
         "EFFe_HandleControllerKey", "EFFe_DrawVideoScreen"))
     fixture = (ROOT / "scripts/tests/fixtures/issue1_preferences.cpp").read_text()
     body = fixture.replace("// SETTINGS_CODE", settings_header + "\n" + settings_source)
-    body = body.replace("// FRONTEND_CODE", corners + "\n" + state + "\n" + functions)
+    pad = (ROOT / "code/win32/win_input_console.cpp").read_text()
+    body = body.replace("// FRONTEND_CODE", corners + "\n" + state + "\n" + functions +
+                        "\n" + function(pad, "IN_STEFX_IsFrontendButton"))
     inputs = (ROOT / "code/client/cl_input.cpp").read_text()
     body = body.replace("// INPUT_CODE", "\n".join(function(inputs, name) for name in
                         ("CL_MouseClamp", "CL_MouseMove")))

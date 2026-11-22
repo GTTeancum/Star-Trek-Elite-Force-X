@@ -51,7 +51,7 @@ typedef struct {
 	int			byteRate;
 } wavinfo_t;
 
-extern wavinfo_t GetWavInfo(byte *data);
+extern wavinfo_t GetWavInfo(byte *data, int headerBytes, int fileBytes);
 
 
 #define SFX_FLAG_UNLOADED	(1 << 0)

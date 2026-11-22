@@ -67,6 +67,9 @@ extern qboolean tr_distortionNegate;
 extern void RB_CaptureScreenImage( void );
 extern void RB_DistortionFill( void );
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+extern int STEFX_TrySplitMapPacket(drawSurf_t *,int);
+#endif
 STEFX_RETAIL_NAMESPACE_BEGIN
 
 #ifdef _XBOX
@@ -1207,6 +1210,16 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			oldEntityNum = entityNum;
 		}
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+        if (!dlighted && entityNum==TR_WORLDENT && !shader->remappedShader) {
+            const int consumed = STEFX_TrySplitMapPacket(drawSurf, numDrawSurfs - i);
+            if (consumed) {
+                i += consumed - 1;
+                drawSurf += consumed - 1;
+                continue;
+            }
+        }
+#endif
 		// add the triangles for this surface
 #ifdef _XBOX
 		g_SPXBRenderListStage = 0x524C0050; /* 'RL50': surface dispatch */

@@ -10,6 +10,7 @@ void UI_UpdateConnectionMessageString( char *string );
 qboolean UI_ConsoleCommand( void ) ;
 qboolean _UI_IsFullscreen( void );
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+void SCR_DrawVirtualStretchPic(float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t shader);
 qboolean UI_STEFX_ShouldDispatchGameplayMenuBind( void );
 void CL_STEFX_SetObjectivesOverlay( qboolean active, const char *source );
 qboolean CL_STEFX_ObjectivesOverlayActive( void );

@@ -20,6 +20,9 @@
 #include "../../win32/xb_perf.h"
 #endif
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+extern bool STEFX_SplitPacketNoAttributes();
+#endif
 STEFX_RETAIL_NAMESPACE_BEGIN
 
 bool styleUpdated[MAX_LIGHT_STYLES];
@@ -2698,6 +2701,14 @@ static int R_STEFX_SplitEconomyEffectivePassCount( const shaderCommands_t *input
 }
 #endif
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+void RB_RestoreSplitPacketInputs(drawSurf_t *surfs,int count) {
+    tess.numIndexes=tess.numVertexes=0;
+    for(int i=0;i<count;++i) rb_surfaceTable[SF_FACE](surfs[i].surface);
+    ComputeColors(tess.xstages,0);
+    ComputeTexCoords(tess.xstages);
+}
+#endif
 static void RB_IterateStagesGeneric( shaderCommands_t *input )
 {
 	int stage;
@@ -2845,11 +2856,16 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		qglDisable(GL_LIGHTING);
 #endif
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+		if (!STEFX_SplitPacketNoAttributes())
+#endif
+		{
 		if (!input->fading)
 		{ //this means ignore this, while we do a fade-out
 			ComputeColors( pStage, forceRGBGen );
 		}
 		ComputeTexCoords( pStage );
+		}
 
 		if ( !setArraysOnce )
 		{

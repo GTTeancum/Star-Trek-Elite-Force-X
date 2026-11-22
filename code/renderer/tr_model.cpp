@@ -131,6 +131,9 @@ static void STEFX_ClearMdrFrameCache(void);
 static void STEFX_FreeMdrFrameBases(void);
 static void STEFX_ResetMdrModelRegistry(void);
 #endif
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+void STEFX_ResetActorMeshes();
+#endif
 static void RE_RegisterModels_FreeDiskImage(CachedEndianedModelBinary_t &cachedModel)
 {
 	if (!cachedModel.pModelDiskImage)
@@ -138,6 +141,9 @@ static void RE_RegisterModels_FreeDiskImage(CachedEndianedModelBinary_t &cachedM
 		return;
 	}
 
+	#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+    STEFX_ResetActorMeshes();
+#endif
 	if (cachedModel.bFileBuffer)
 	{
 		// Only adopted FS buffers carry the header read by this function.
@@ -993,7 +999,25 @@ static qboolean STEFX_IsDefaultPlayerMdrFallbackName(const char *name)
 #define STEFX_MDR_BLOCK_FRAMES 16
 static byte s_stefxMdrBlockRaw[STEFX_MDR_BLOCK_FRAMES * STEFX_BORG_MDR_MAX_FRAME_BYTES];
 static byte s_stefxMdrBlockPacked[sizeof(s_stefxMdrBlockRaw) * 2 + 32];
-static int s_stefxMdrBlockDictionary[4096];
+// The encoder owns the dictionary during loading. Split-screen visibility
+// and attachments reuse it between loads for exact values from decoded blocks.
+struct stefxMdrBounds_t { vec3_t bounds[2], localOrigin; float radius; };
+typedef char stefxMdrBoundsLayout[(sizeof(stefxMdrBounds_t) == offsetof(md4CompFrame_t, bones) &&
+    offsetof(md4Frame_t, radius) == offsetof(stefxMdrBounds_t, radius)) ? 1 : -1];
+static union {
+    int dictionary[4096];
+    struct {
+        stefxMdrBounds_t bounds[16][STEFX_MDR_BLOCK_FRAMES];
+        md4CompBone_t tagBones[16][STEFX_MDR_BLOCK_FRAMES];
+    } playback;
+} s_stefxMdrWork;
+typedef char stefxMdrPlaybackFitsDictionary[(sizeof(s_stefxMdrWork.playback) <= sizeof(s_stefxMdrWork.dictionary)) ? 1 : -1];
+struct stefxTagBlockKey_t { const md4Header_t *header; int block, bone; };
+static stefxTagBlockKey_t s_tagBlockKeys[16];
+extern "C" volatile unsigned int g_SPXBSplitTagBones[3] = {0}; // hits, full frame lookups, fills
+struct stefxMdrBoundsKey_t { const md4Header_t *header; int block; };
+static stefxMdrBoundsKey_t s_stefxMdrBoundsKeys[16];
+extern "C" volatile unsigned int g_SPXBMdrBounds[3] = {0}; // hits, full-frame queries, block fills
 static const md4Header_t *s_stefxMdrBlockHeader;
 static int s_stefxMdrBlockIndex = -1;
 
@@ -1052,6 +1076,8 @@ static void STEFX_FreeMdrStorage(byte *memory, qboolean heapAllocated)
 static void STEFX_ClearMdrFrameCache(void)
 {
 	s_stefxMdrBlockHeader = NULL;
+	memset(s_stefxMdrBoundsKeys, 0, sizeof(s_stefxMdrBoundsKeys));
+	memset(s_tagBlockKeys, 0, sizeof(s_tagBlockKeys));
 	s_stefxMdrBlockIndex = -1;
 	memset(s_stefxBorgMdrFrameCache, 0, sizeof(s_stefxBorgMdrFrameCache));
 	s_stefxBorgMdrFrameCacheReplace = 0;
@@ -1062,6 +1088,10 @@ static void STEFX_ClearMdrFrameCache(void)
 
 static void STEFX_ResetMdrModelRegistry(void)
 {
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+    STEFX_ResetActorMeshes();
+#endif
+
 	memset(s_stefxBorgMdrModels, 0, sizeof(s_stefxBorgMdrModels));
 	s_stefxBorgMdrModelCount = 0;
 	STEFX_ClearMdrFrameCache();
@@ -1366,6 +1396,42 @@ const void *R_STEFX_GetMDRFrame(const md4Header_t *header, int frame)
 	}
 }
 
+// Only split-screen culling and fog call this function. Return two stable
+// prefixes so a caller can compare both animation frames across cache eviction.
+const void *R_STEFX_GetSplitMDRBounds(const md4Header_t *header, int frame)
+{
+    static stefxMdrBounds_t result[2];
+    static unsigned int next;
+    const int block = frame / STEFX_MDR_BLOCK_FRAMES;
+    const int within = frame % STEFX_MDR_BLOCK_FRAMES;
+    const unsigned int id = (unsigned int)header;
+    const unsigned int slot = ((id >> 5) ^ (id >> 12) ^ (unsigned int)block) & 15;
+    stefxMdrBounds_t &out = result[next++ & 1];
+    if (frame >= 0 && frame < header->numFrames &&
+        s_stefxMdrBoundsKeys[slot].header == header && s_stefxMdrBoundsKeys[slot].block == block) {
+        out = s_stefxMdrWork.playback.bounds[slot][within];
+        ++g_SPXBMdrBounds[0];
+        return &out;
+    }
+
+    const void *full = R_STEFX_GetMDRFrame(header, frame);
+    memcpy(&out, full, sizeof(out));
+    ++g_SPXBMdrBounds[1];
+    if (s_stefxMdrBlockHeader == header && s_stefxMdrBlockIndex == block &&
+        frame >= 0 && frame < header->numFrames) {
+        const int stride = (int)offsetof(md4CompFrame_t, bones) + header->numBones * sizeof(md4CompBone_t);
+        int frames = header->numFrames - block * STEFX_MDR_BLOCK_FRAMES;
+        if (frames > STEFX_MDR_BLOCK_FRAMES) frames = STEFX_MDR_BLOCK_FRAMES;
+        for (int i = 0; i < frames; ++i)
+            memcpy(&s_stefxMdrWork.playback.bounds[slot][i], s_stefxMdrBlockRaw + i * stride, sizeof(out));
+        s_stefxMdrBoundsKeys[slot].header = header;
+        s_stefxMdrBoundsKeys[slot].block = block;
+        if (++g_SPXBMdrBounds[2] == 1)
+            XBLog_WriteCritical("STEFX_SPLIT_MDR_BOUNDS: using lossless frame bounds");
+    }
+    return &out;
+}
+
 static md4Header_t *STEFX_RegisterCompactBorgMdr(model_t *mod, void *buffer,
 	const char *modelName, qboolean *alreadyFound)
 {
@@ -1597,6 +1663,8 @@ static qboolean STEFX_TryStreamMdrFile(const char *name, void **buffer, qboolean
 	// A size pass avoids retaining the complete source file beside the packed
 	// model. Both passes read sequentially and use bounded reusable workspace.
 	s_stefxMdrBlockHeader = NULL;
+	memset(s_stefxMdrBoundsKeys, 0, sizeof(s_stefxMdrBoundsKeys));
+	memset(s_tagBlockKeys, 0, sizeof(s_tagBlockKeys));
 	for (block = 0; block < blocks; ++block)
 	{
 		int frames = header.numFrames - block * STEFX_MDR_BLOCK_FRAMES;
@@ -1604,7 +1672,7 @@ static qboolean STEFX_TryStreamMdrFile(const char *name, void **buffer, qboolean
 		int bytes = frames * frameSize;
 		if (FS_Read(s_stefxMdrBlockRaw, bytes, file) != bytes) { valid = qfalse; break; }
 		int encoded = StefxMdrFrame::Encode(s_stefxMdrBlockRaw, bytes, frameSize, transforms,
-			NULL, 0, transformWork, encodedWork, encodedCapacity, s_stefxMdrBlockDictionary);
+			NULL, 0, transformWork, encodedWork, encodedCapacity, s_stefxMdrWork.dictionary);
 		if (!encoded) { valid = qfalse; break; }
 		packedBytes += encoded;
 	}
@@ -1654,7 +1722,7 @@ static qboolean STEFX_TryStreamMdrFile(const char *name, void **buffer, qboolean
 		if (FS_Read(s_stefxMdrBlockRaw, bytes, file) != bytes) { valid = qfalse; break; }
 		int count = StefxMdrFrame::Encode(s_stefxMdrBlockRaw, bytes, frameSize, transforms,
 			packed + cursor, packedBytes - cursor, transformWork, encodedWork, encodedCapacity,
-			s_stefxMdrBlockDictionary);
+			s_stefxMdrWork.dictionary);
 		if (!count) { valid = qfalse; break; }
 		offsets[block] = cursor;
 		cursor += count;
@@ -2985,7 +3053,10 @@ void RE_BeginRegistration( glconfig_t *glconfigOut ) {
 	Hunk_ClearToMark();
 
 #ifdef _XBOX
-	XBLog_WriteCritical("STEFX_HW_BOOT: RE_BeginRegistration entering R_Init");
+	// Change scanout between game modes while renderer work is quiescent.
+    extern void GLW_ApplyGameDisplay(void);
+    GLW_ApplyGameDisplay();
+    XBLog_WriteCritical("STEFX_HW_BOOT: RE_BeginRegistration entering R_Init");
 #endif
 	R_Init();
 #ifdef _XBOX
@@ -3164,6 +3235,43 @@ static md4Tag_t *R_STEFX_GetMDRTag( md4Header_t *mod, const char *tagName ) {
 	return NULL;
 }
 
+#ifdef _XBOX
+// Attachment tags need one bone from each pose. A miss can provide that bone
+// for the entire block already decompressed by the normal frame reader.
+static const md4CompBone_t *R_STEFX_TagBone(const md4Header_t *header, int frame, int bone) {
+	static cvar_t *split = Cvar_Get("stefx_splitScreen", "0", 0);
+	static cvar_t *players = Cvar_Get("stefx_splitScreenPlayers", "1", 0);
+	const bool splitActive = split->integer && players->integer >= 2;
+	const int block = frame / STEFX_MDR_BLOCK_FRAMES;
+	const int within = frame % STEFX_MDR_BLOCK_FRAMES;
+	const unsigned int id = (unsigned int)header;
+	const unsigned int slot = ((id >> 5) ^ (id >> 12) ^ (block * 5u) ^ bone) & 15;
+	stefxTagBlockKey_t &key = s_tagBlockKeys[slot];
+	if (splitActive && key.header == header && key.block == block && key.bone == bone) {
+		++g_SPXBSplitTagBones[0];
+		return &s_stefxMdrWork.playback.tagBones[slot][within];
+	}
+	const md4CompFrame_t *full = (const md4CompFrame_t *)R_STEFX_GetMDRFrame(header, frame);
+	if (splitActive) {
+		++g_SPXBSplitTagBones[1];
+		if (s_stefxMdrBlockHeader == header && s_stefxMdrBlockIndex == block) {
+			const int stride = offsetof(md4CompFrame_t, bones) + header->numBones * sizeof(md4CompBone_t);
+			const int offset = offsetof(md4CompFrame_t, bones) + bone * sizeof(md4CompBone_t);
+			const int left = header->numFrames - block * STEFX_MDR_BLOCK_FRAMES;
+			const int count = left < STEFX_MDR_BLOCK_FRAMES ? left : STEFX_MDR_BLOCK_FRAMES;
+			for (int i = 0; i < count; ++i)
+				memcpy(&s_stefxMdrWork.playback.tagBones[slot][i], s_stefxMdrBlockRaw + i * stride + offset, sizeof(md4CompBone_t));
+			key.header = header;
+			key.block = block;
+			key.bone = bone;
+			if (++g_SPXBSplitTagBones[2] == 1)
+				XBLog_WriteCritical("STEFX_SPLIT_TAGS: reusing compressed attachment bones");
+		}
+	}
+	return &full->bones[bone];
+}
+#endif
+
 static qboolean R_STEFX_GetMDRBone( md4Header_t *mod, int frame, int boneIndex, md4Bone_t *bone ) {
 	int				frameSize;
 
@@ -3178,15 +3286,14 @@ static qboolean R_STEFX_GetMDRBone( md4Header_t *mod, int frame, int boneIndex, 
 	}
 
 	if ( mod->ofsFrames < 0 ) {
-		md4CompFrame_t	*cframe;
-
-		frameSize = (int)( &((md4CompFrame_t *)0)->bones[ mod->numBones ] );
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-		cframe = (md4CompFrame_t *)R_STEFX_GetMDRFrame(mod, frame);
+		const md4CompBone_t *source = R_STEFX_TagBone(mod, frame, boneIndex);
+		MC_UnCompress(bone->matrix, source->Comp);
 #else
-		cframe = (md4CompFrame_t *)((byte *)mod - mod->ofsFrames + frame * frameSize );
+		frameSize = (int)( &((md4CompFrame_t *)0)->bones[ mod->numBones ] );
+		md4CompFrame_t *cframe = (md4CompFrame_t *)((byte *)mod - mod->ofsFrames + frame * frameSize);
+		MC_UnCompress(bone->matrix, cframe->bones[boneIndex].Comp);
 #endif
-		MC_UnCompress( bone->matrix, cframe->bones[ boneIndex ].Comp );
 	} else {
 		md4Frame_t		*md4Frame;
 

@@ -23,13 +23,15 @@ private:
 	Data *items;
 	unsigned int numItems;
 	unsigned int maxItems;
+	Data *allocation;
 
 	VVFixedMap(void) {}
 
 public:
 	VVFixedMap(unsigned int maxItems)
 	{
-		items = new Data[maxItems];
+		allocation = new Data[maxItems];
+		items = allocation;
 		numItems = 0;
 		this->maxItems = maxItems;
 	}
@@ -37,8 +39,7 @@ public:
 
 	~VVFixedMap(void)
 	{
-		items -= ( maxItems - numItems );
-		delete [] items;
+		delete [] allocation;
 		numItems = 0;
 	}
 

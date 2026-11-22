@@ -56,6 +56,7 @@
 #include <Xtl.h>
 #include "../cgame/cg_local.h"
 #include "../win32/xbox_texture_man.h"
+#include "../win32/xbox_display.h"
 extern "C" void XBLog_Print(const char *msg);
 extern "C" volatile unsigned int g_SPXBBootPhase;
 #if defined(STEFX_ELITE_FORCE_SP)
@@ -346,12 +347,17 @@ void Com_InitZoneMemory(void)
 	// Shipping JA MP measures memory after reserving the 10 MiB static and 4 MiB
 	// skin texture pools, then leaves the FinalBuild reserve and allocates the
 	// cached remainder with GlobalAlloc.
-	if (status.dwAvailPhys <= RETAIL_FINAL_ZONE_RESERVE)
+	// The SD reserve covers two 32-bit color surfaces and a D24S8 surface.
+	// The game heap is committed before D3D and DirectSound allocate theirs.
+	const XboxDisplayMode mode = XboxGetDisplayMode();
+	const DWORD extraSurfaceBytes = (mode.width * mode.height - 640 * 480) * 3 * 4;
+	const DWORD reserve = RETAIL_FINAL_ZONE_RESERVE + extraSurfaceBytes;
+	if (status.dwAvailPhys <= reserve)
 	{
 		Com_Error(ERR_FATAL, "Zone: insufficient physical memory (%u available)",
 			(unsigned)status.dwAvailPhys);
 	}
-	size = status.dwAvailPhys - RETAIL_FINAL_ZONE_RESERVE;
+	size = status.dwAvailPhys - reserve;
 	// PersistDisplay's 640x480x4 framebuffer is already charged to available
 	// physical memory by the time retail computes its FinalBuild zone.
 	size += (640 * 480 * 4);

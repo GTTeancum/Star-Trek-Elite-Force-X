@@ -40,6 +40,23 @@ extern "C" volatile unsigned int g_SPXBClTailStage;
 #define STEFX_TEMP_HARDWARE_FPS_COUNTER 0
 #endif
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+void SCR_DrawVirtualStretchPic(float x, float y, float w, float h,
+    float s1, float t1, float s2, float t2, qhandle_t shader)
+{
+	// RB_SetGL2D uses framebuffer pixels over gameplay and virtual units in fullscreen menus.
+	if (cls.state == CA_ACTIVE && cls.glconfig.vidWidth != SCREEN_WIDTH && !_UI_IsFullscreen()) {
+		const float sx = (float)cls.glconfig.vidWidth / SCREEN_WIDTH;
+		const float sy = (float)cls.glconfig.vidHeight / SCREEN_HEIGHT;
+		x *= sx; w *= sx;
+		y *= sy; h *= sy;
+	}
+	re.DrawStretchPic(x, y, w, h, s1, t1, s2, t2, shader);
+}
+#else
+#define SCR_DrawVirtualStretchPic re.DrawStretchPic
+#endif
+
 extern console_t con;
 
 qboolean	scr_initialized;		// ready to draw
@@ -77,7 +94,7 @@ Coordinates are 640*480 virtual values
 void SCR_FillRect( float x, float y, float width, float height, const float *color ) {
 	re.SetColor( color );
 
-	re.DrawStretchPic( x, y, width, height, 0, 0, 0, 0, cls.whiteShader );
+	SCR_DrawVirtualStretchPic( x, y, width, height, 0, 0, 0, 0, cls.whiteShader );
 
 	re.SetColor( NULL );
 }
@@ -140,7 +157,7 @@ void SCR_DrawBigChar( int x, int y, int ch ) {
 	size = 0.03125;
 	size2 = 0.0625;
 
-	re.DrawStretchPic( ax, ay, aw, ah,
+	SCR_DrawVirtualStretchPic( ax, ay, aw, ah,
 					   fcol, frow, 
 					   fcol + size, frow + size2, 
 					   cls.charSetShader );

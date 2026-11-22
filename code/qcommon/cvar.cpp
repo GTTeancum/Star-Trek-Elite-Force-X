@@ -4,6 +4,7 @@
 #include "qcommon.h"
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 #include "../win32/xb_log.h"
+#include <ctype.h>
 #endif
 
 cvar_t		*cvar_vars;
@@ -154,7 +155,62 @@ static qboolean Cvar_ValidateString( const char *s ) {
 Cvar_FindVar
 ============
 */
-static cvar_t *Cvar_FindVar( const char *var_name ) {
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+// Slots stay put when Cvar_Defrag moves the strings. Zero terminates a chain.
+static unsigned short cvar_bucketHeads[256];
+static unsigned short cvar_bucketNext[MAX_CVARS];
+static cvar_t *cvar_splitScreen;
+static cvar_t *cvar_splitPlayers;
+extern "C" { unsigned int g_SPXBSplitCvarIndexUsed; }
+
+static unsigned int Cvar_NameBucket( const char *name ) {
+	unsigned int hash = 0;
+	unsigned int weight = 119;
+	for (const unsigned char *s = (const unsigned char *)name; *s; ++s, ++weight) {
+		hash += (unsigned char)tolower(*s) * weight;
+	}
+	return hash & 255;
+}
+
+static void Cvar_IndexVariable( cvar_t *var ) {
+	const int slot = var - cvar_indexes;
+	const unsigned int bucket = Cvar_NameBucket(var->name);
+	cvar_bucketNext[slot] = cvar_bucketHeads[bucket];
+	cvar_bucketHeads[bucket] = (unsigned short)(slot + 1);
+	if (!Q_stricmp(var->name, "stefx_splitScreen")) {
+		cvar_splitScreen = var;
+	} else if (!Q_stricmp(var->name, "stefx_splitScreenPlayers")) {
+		cvar_splitPlayers = var;
+	}
+}
+
+static void Cvar_UnindexVariable( cvar_t *var ) {
+	const int slot = var - cvar_indexes;
+	unsigned short *link = &cvar_bucketHeads[Cvar_NameBucket(var->name)];
+	while (*link && *link != slot + 1) {
+		link = &cvar_bucketNext[*link - 1];
+	}
+	if (*link) {
+		*link = cvar_bucketNext[slot];
+		cvar_bucketNext[slot] = 0;
+	}
+	if (var == cvar_splitScreen) cvar_splitScreen = NULL;
+	if (var == cvar_splitPlayers) cvar_splitPlayers = NULL;
+}
+
+static cvar_t *Cvar_FindIndexed( const char *name ) {
+	unsigned short link = cvar_bucketHeads[Cvar_NameBucket(name)];
+	while (link) {
+		const int slot = link - 1;
+		cvar_t *var = &cvar_indexes[slot];
+		if (!Q_stricmp(name, var->name)) return var;
+		link = cvar_bucketNext[slot];
+	}
+	return NULL;
+}
+#endif
+
+static cvar_t *Cvar_FindLinear( const char *var_name ) {
 	cvar_t	*var;
 	
 	for (var=cvar_vars ; var ; var=var->next) {
@@ -164,6 +220,20 @@ static cvar_t *Cvar_FindVar( const char *var_name ) {
 	}
 
 	return NULL;
+}
+
+static cvar_t *Cvar_FindVar( const char *var_name ) {
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	if (var_name && cvar_splitScreen && cvar_splitScreen->integer &&
+		cvar_splitPlayers && cvar_splitPlayers->integer >= 2) {
+		if (!g_SPXBSplitCvarIndexUsed) {
+			g_SPXBSplitCvarIndexUsed = 1;
+			XBLog_Print("Split-screen cvar lookup index active\n");
+		}
+		return Cvar_FindIndexed(var_name);
+	}
+#endif
+	return Cvar_FindLinear(var_name);
 }
 
 /*
@@ -404,6 +474,9 @@ cvar_t *Cvar_Get( const char *var_name, const char *var_value, int flags ) {
 	// link the variable in
 	var->next = cvar_vars;
 	cvar_vars = var;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	Cvar_IndexVariable(var);
+#endif
 
 	var->flags = flags;
 
@@ -886,6 +959,9 @@ void Cvar_Restart_f( void ) {
 		// throw out any variables the user created
 		if ( var->flags & CVAR_USER_CREATED ) {
 			*prev = var->next;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+			Cvar_UnindexVariable(var);
+#endif
 			if ( var->name ) {
 				Cvar_FreeString( var->name );
 			}

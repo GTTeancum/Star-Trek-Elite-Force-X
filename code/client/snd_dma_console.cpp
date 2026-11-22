@@ -1261,6 +1261,31 @@ static bool IsListenerEnt(int entnum)
 S_PickChannel
 =================
 */
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+extern "C" volatile unsigned int g_SPXBVoiceReuse[8];
+extern bool QAL_MatchesIdleVoiceRoute(ALuint source, ALuint buffer, bool voice);
+static qboolean S_XboxIsVoiceChannel(soundChannel_t channel);
+
+static channel_t *S_MatchIdleSplitRoute(channel_t *first, int entchannel, const sfx_t *sfx) {
+    if (s_numListeners != 4 || first->b2D || first->bPlaying) return first;
+    static cvar_t *reuse = Cvar_Get("s_efSplitVoiceReuse", "1", 0);
+    if (!reuse->integer) return first;
+    const bool voice = sfx && (S_XboxIsVoiceChannel((soundChannel_t)entchannel) || (sfx->iFlags & SFX_FLAG_VOICE));
+    const ALuint buffer = sfx ? sfx->Buffer : 0;
+    if (QAL_MatchesIdleVoiceRoute(first->alSource, buffer, voice)) return first;
+    ++g_SPXBVoiceReuse[0];
+    for (channel_t *ch = first + 1; ch < s_channels + s_numChannels; ++ch) {
+        if (ch->b2D || ch->thesfx || ch->bPlaying) continue;
+        if (QAL_MatchesIdleVoiceRoute(ch->alSource, buffer, voice)) {
+            if (++g_SPXBVoiceReuse[1] == 1)
+                Com_Printf("STEFX_SPLIT_AUDIO: reused an idle four-listener DirectSound route\n");
+            return ch;
+        }
+    }
+    return first;
+}
+#endif
+
 channel_t *S_PickChannel(int entnum, int entchannel, bool is2D, sfx_t* sfx)
 {
 	int			ch_idx;
@@ -1313,6 +1338,9 @@ channel_t *S_PickChannel(int entnum, int entchannel, bool is2D, sfx_t* sfx)
 		{
 			ch_firstToDie = ch;
 			age = ch->iLastPlayTime;
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+            ch_firstToDie = S_MatchIdleSplitRoute(ch, entchannel, sfx);
+#endif
 			foundChan = true;
 		}
 	}
@@ -4166,10 +4194,10 @@ static qboolean S_StartBackgroundTrack_Actual( MusicInfo_t *pMusicInfo, qboolean
 	// read enough of the file to get the header...
 	byte buffer[4096];
 	memset(buffer, 0, sizeof(buffer));
-	FS_Read(buffer, sizeof(buffer), handle);
+	int headerBytes = FS_Read(buffer, len < sizeof(buffer) ? len : sizeof(buffer), handle);
 	FS_FCloseFile( handle );
 
-	wavinfo_t info = GetWavInfo(buffer);
+	wavinfo_t info = GetWavInfo(buffer, headerBytes, len);
 	if ( info.size == 0 ) {
 		Com_Printf(S_COLOR_YELLOW "WARNING: Invalid format in music file %s\n", name);
 		S_StopBackgroundTrack_Actual( pMusicInfo );

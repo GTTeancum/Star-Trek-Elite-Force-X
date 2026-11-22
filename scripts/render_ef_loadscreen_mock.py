@@ -140,9 +140,11 @@ class LoadScreenRenderer:
     ) -> None:
         img = self.assets[asset_name]
         if w < 0:
+            x += w
             img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
             w = -w
         if h < 0:
+            y += h
             img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
             h = -h
         if img.size != (w, h):

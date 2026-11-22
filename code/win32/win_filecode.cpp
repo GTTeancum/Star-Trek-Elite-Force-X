@@ -395,7 +395,7 @@ int Sys_GetFileCode(const char* name)
 	unsigned int code = crc32(0, (const byte *)osname, strlen(osname));
 	
 	// Check if the file exists
-	if (!s_Files->Find(code))
+	if (!s_Files || !s_Files->Find(code))
 	{
 		ReleaseMutex(s_Mutex);
 		return -1;
@@ -409,7 +409,7 @@ const char* Sys_GetFileCodeName(int code)
 {
 	WaitForSingleObject(s_Mutex, INFINITE);
 
-	FileInfo *entry = s_Files->Find(code);
+	FileInfo *entry = s_Files ? s_Files->Find(code) : NULL;
 	if (entry)
 	{
 		ReleaseMutex(s_Mutex);
@@ -424,7 +424,7 @@ int Sys_GetFileCodeSize(int code)
 {
 	WaitForSingleObject(s_Mutex, INFINITE);
 
-	FileInfo *entry = s_Files->Find(code);
+	FileInfo *entry = s_Files ? s_Files->Find(code) : NULL;
 	if (entry)
 	{
 		ReleaseMutex(s_Mutex);

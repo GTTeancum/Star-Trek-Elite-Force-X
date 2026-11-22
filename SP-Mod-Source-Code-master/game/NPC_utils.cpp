@@ -15,18 +15,25 @@ qboolean NPC_TargetVisible( gentity_t *ent );
 extern void Q3_DebugPrint( int level, const char *format, ... );
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+extern "C" volatile unsigned int g_SPXBCoopSense[3]={0};
+static bool STEFX_TwoPlayerCoop()
+{
+    static cvar_t *split=gi.cvar("stefx_splitScreen","0",0);
+    static cvar_t *players=gi.cvar("stefx_splitScreenPlayers","1",0);
+    return split->integer && players->integer>=2;
+}
 static int STEFX_SplitCoopP2EntityNumForAI( void )
 {
 	int p2EntNum;
 	gentity_t *p2;
 
-	if ( !gi.Cvar_VariableIntegerValue( "stefx_splitScreen" )
-		|| gi.Cvar_VariableIntegerValue( "stefx_splitScreenPlayers" ) < 2 )
+	if ( !STEFX_TwoPlayerCoop() )
 	{
 		return ENTITYNUM_NONE;
 	}
 
-	p2EntNum = gi.Cvar_VariableIntegerValue( "stefx_splitScreenP2Entity" );
+	static cvar_t *p2Number=gi.cvar("stefx_splitScreenP2Entity","-1",0);
+	p2EntNum=p2Number->integer;
 	if ( p2EntNum <= 0 || p2EntNum >= globals.num_entities )
 	{
 		return ENTITYNUM_NONE;
@@ -62,13 +69,13 @@ static qboolean STEFX_SplitCoopIsPlayerEntity( const gentity_t *ent )
 	return (qboolean)( p2EntNum != ENTITYNUM_NONE && ent == &g_entities[p2EntNum] );
 }
 
-static gentity_t *STEFX_SplitCoopNearestVisiblePlayer( qboolean requireValidEnemy )
+static gentity_t *STEFX_SplitCoopNearestVisiblePlayer( qboolean requireValidEnemy, float distanceLimit=Q3_INFINITE )
 {
 	int candidates[2];
 	int numCandidates = 1;
 	int i;
 	int p2EntNum;
-	float bestDist = Q3_INFINITE;
+	float bestDist = distanceLimit;
 	gentity_t *best = NULL;
 
 	candidates[0] = 0;
@@ -91,12 +98,16 @@ static gentity_t *STEFX_SplitCoopNearestVisiblePlayer( qboolean requireValidEnem
 		{
 			continue;
 		}
-		if ( !NPC_TargetVisible( candidate ) )
+		dist = DistanceSquared( NPC->currentOrigin, candidate->currentOrigin );
+        if ( p2EntNum != ENTITYNUM_NONE && dist >= bestDist ) {
+            ++g_SPXBCoopSense[1];
+            continue;
+        }
+        if ( !NPC_TargetVisible( candidate ) )
 		{
 			continue;
 		}
 
-		dist = DistanceSquared( NPC->currentOrigin, candidate->currentOrigin );
 		if ( dist < bestDist )
 		{
 			bestDist = dist;
@@ -1068,6 +1079,33 @@ int NPC_FindNearestEnemy( gentity_t *ent )
 
 	//Get a number of entities in a given space
 	numEnts = gi.EntitiesInBox( mins, maxs, radiusEnts, MAX_RADIUS_ENTS );
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+    if (STEFX_TwoPlayerCoop()) {
+        // The original search compares truncated distances and keeps the
+        // first entity on a tie. Sort that precise priority before tracing.
+        struct candidate_t {int distance; gentity_t *entity;} sorted[MAX_RADIUS_ENTS];
+        int count=0;
+        for(int n=0;n<numEnts;++n) {
+            gentity_t *candidate=radiusEnts[n];
+            if (candidate==ent || !NPC_ValidEnemy(candidate)) continue;
+            int d=(int)DistanceSquared(ent->currentOrigin,candidate->currentOrigin);
+            if (d>=nearestDist) continue;
+            int insert=count;
+            while(insert && sorted[insert-1].distance>d) {
+                sorted[insert]=sorted[insert-1]; --insert;
+            }
+            sorted[insert].distance=d; sorted[insert].entity=candidate;++count;
+        }
+        if (++g_SPXBCoopSense[0]==1) XBLog_WriteCritical("STEFX_COOP_SENSE: nearest eligible enemy tested first");
+        for(int n=0;n<count;++n) {
+            if (NPC_TargetVisible(sorted[n].entity)) {
+                g_SPXBCoopSense[2]+=count-n-1;
+                return sorted[n].entity->s.number;
+            }
+        }
+        return -1;
+    }
+#endif
 
 	for ( i = 0; i < numEnts; i++ )
 	{
@@ -1188,7 +1226,7 @@ static qboolean NPC_CheckPlayerDistance( void )
 		return qfalse;
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-	gentity_t	*player = STEFX_SplitCoopNearestVisiblePlayer( qtrue );
+	gentity_t	*player = STEFX_SplitCoopNearestVisiblePlayer( qtrue, STEFX_TwoPlayerCoop() ? DistanceSquared(NPC->currentOrigin,NPC->enemy->currentOrigin) : Q3_INFINITE );
 
 	if ( !player )
 		return qfalse;

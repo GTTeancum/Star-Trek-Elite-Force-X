@@ -29,7 +29,7 @@ cvar_t*r_drawworld=&on,*r_nocull=&off,*r_novis=&off,*r_lockpvs=&off,*r_shadows=&
 cvar_t*Cvar_Get(const char*,const char*,int){return &mode;}
 void XBLog_WriteCriticalf(const char*,...){}
 float frames[2][6]={{-2,-3,-4,2,3,4},{-5,-6,-7,5,6,7}},rotating[6];
-const void*R_STEFX_GetMDRFrame(const md4Header_t*,int n){memcpy(rotating,frames[n],sizeof(rotating));return rotating;}
+const void*R_STEFX_GetSplitMDRBounds(const md4Header_t*,int n){memcpy(rotating,frames[n],sizeof(rotating));return rotating;}
 """
 suffix=r"""
 int main(){
@@ -66,6 +66,21 @@ int main(){
  shader.stages[0].stateBits=GLS_DEPTHTEST_DISABLE;assert(!STEFX_CoopSkipHiddenSurface(&type,&shader));shader.stages[0].stateBits=0;
  shader.remappedShader=&shader;assert(!STEFX_CoopSkipHiddenSurface(&type,&shader));shader.remappedShader=0;
  tr.shadowShader=&shader;assert(!STEFX_CoopSkipHiddenSurface(&type,&shader));tr.shadowShader=0;
+ // A shadow or frustum-culled model must leave the BSP walk pending. A
+ // normal model surface resolves it once per entity/view, even with many stages.
+ model.type=MOD_MESH;ent.e.origin[0]=-100;ent.e.frame=0;ent.e.oldframe=1;
+ unsigned int queries=g_SPXBCoopModelPvs[1];STEFX_ClearModelPvs();STEFX_BeginModelPvs(&ent,&model);
+ tr.shadowShader=&shader;assert(!STEFX_CoopSkipHiddenSurface(&type,&shader));tr.shadowShader=0;
+ assert(g_SPXBCoopModelPvs[1]==queries);
+ assert(STEFX_CoopSkipHiddenSurface(&type,&shader));assert(STEFX_CoopSkipHiddenSurface(&type,&shader));
+ assert(g_SPXBCoopModelPvs[1]==queries+1);
+ STEFX_ClearModelPvs();ent.e.origin[0]=100;STEFX_BeginModelPvs(&ent,&model);
+ assert(!STEFX_CoopSkipHiddenSurface(&type,&shader));assert(!STEFX_CoopSkipHiddenSurface(&type,&shader));
+ assert(g_SPXBCoopModelPvs[1]==queries+2);
+ STEFX_ClearModelPvs();ent.e.origin[0]=-100;ent.e.frame=8;STEFX_BeginModelPvs(&ent,&model);ent.e.frame=0;
+ assert(!STEFX_CoopSkipHiddenSurface(&type,&shader));assert(g_SPXBCoopModelPvs[1]==queries+2);
+ STEFX_ClearModelPvs();tr.viewParms.stefxSplitView=0;STEFX_BeginModelPvs(&ent,&model);
+ assert(!STEFX_CoopSkipHiddenSurface(&type,&shader));assert(g_SPXBCoopModelPvs[1]==queries+2);
  puts("Co-op model PVS: transformed whole bounds, frame union/cache rotation, partition grazing, malformed trees, unsupported state and observe mode passed.");
 }
 """

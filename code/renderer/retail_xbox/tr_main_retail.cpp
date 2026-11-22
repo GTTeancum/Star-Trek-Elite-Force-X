@@ -1673,7 +1673,7 @@ void R_AddEntitySurfaces (void) {
 		  tr.currentEntityNum++ ) {
 		ent = tr.currentEntity = &tr.refdef.entities[tr.currentEntityNum];
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-	s_coopModelOutsidePvs = false;
+	STEFX_ClearModelPvs();
 #endif
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
@@ -1869,7 +1869,7 @@ void R_AddEntitySurfaces (void) {
 
 			tr.currentModel = R_GetModelByHandle( ent->e.hModel );
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-	s_coopModelOutsidePvs = STEFX_CoopModelOutsidePvs(ent, tr.currentModel);
+			STEFX_BeginModelPvs(ent, tr.currentModel);
 #endif
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && defined(STEFX_SP_HOSTED_MP)
 			if ( tr.viewParms.stefxSplitThreePlusEconomy && tr.currentModel &&
@@ -1977,7 +1977,7 @@ Ghoul2 Insert End
 	}
 
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-	s_coopModelOutsidePvs = false;
+	STEFX_ClearModelPvs();
 	if ( ( stefxSplitOffscreenEffectsCulled > 0 ||
 		stefxSplitDistantEffectsCulled > 0 ||
 		stefxSplitDistantPickupsCulled > 0 ) &&

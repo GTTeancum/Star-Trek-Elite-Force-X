@@ -14,6 +14,19 @@
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 extern void UI_EFPauseMenu_Open( const char *menuID );
 extern qboolean UI_EFPauseMenu_IsActive( void );
+extern qboolean UI_EFMainMenu_IsActive( void );
+extern qboolean UI_EFQmenu_IsActive( void );
+
+static void CL_DrawMenuPic(float x, float y, float w, float h,
+    float s1, float t1, float s2, float t2, qhandle_t shader)
+{
+	if (cls.state == CA_ACTIVE && cls.glconfig.vidWidth != SCREEN_WIDTH &&
+	    (UI_EFMainMenu_IsActive() || UI_EFPauseMenu_IsActive() || UI_EFQmenu_IsActive())) {
+		SCR_DrawVirtualStretchPic(x, y, w, h, s1, t1, s2, t2, shader);
+	} else {
+		re.DrawStretchPic(x, y, w, h, s1, t1, s2, t2, shader);
+	}
+}
 #endif
 
 int PC_ReadTokenHandle(int handle, struct pc_token_s *pc_token);
@@ -302,7 +315,11 @@ void CL_InitUI( void ) {
 	uii.R_ModelBounds			= re.ModelBounds;
 
 	uii.R_SetColor				= re.SetColor;
-	uii.R_DrawStretchPic		= re.DrawStretchPic;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	uii.R_DrawStretchPic        = CL_DrawMenuPic;
+#else
+	uii.R_DrawStretchPic        = re.DrawStretchPic;
+#endif
 	uii.UpdateScreen			= SCR_UpdateScreen;
 
 #ifdef _XBOX
@@ -433,6 +450,14 @@ void CL_STEFX_SetObjectivesOverlay( qboolean active, const char *source )
 
 	if ( active )
 	{
+#if !defined(STEFX_SP_HOSTED_MP)
+		extern qboolean STEFX_XboxSuppressPlayerPresentation(void);
+		if (cls.cgameStarted && STEFX_XboxSuppressPlayerPresentation())
+		{
+			XBLF("STEFX: objectives ignored during scripted presentation source='%s'", tag);
+			return;
+		}
+#endif
 		if ( !CL_STEFX_EnsureUIStarted( tag ) )
 		{
 			XBLF("STEFX: objectives overlay blocked source='%s' state=%d renderer=%d cgame=%d catcher=0x%x",
@@ -564,8 +589,8 @@ void CL_STEFX_DrawMissionFailedOverlay( void )
 	SCR_FillRect( 140.0f, 352.0f, 360.0f, 108.0f, darkBlue );
 
 	re.SetColor( gold );
-	re.DrawStretchPic( 128.0f, 348.0f, 384.0f, 3.0f, 0, 0, 0, 0, cls.whiteShader );
-	re.DrawStretchPic( 128.0f, 462.0f, 384.0f, 3.0f, 0, 0, 0, 0, cls.whiteShader );
+	SCR_DrawVirtualStretchPic( 128.0f, 348.0f, 384.0f, 3.0f, 0, 0, 0, 0, cls.whiteShader );
+	SCR_DrawVirtualStretchPic( 128.0f, 462.0f, 384.0f, 3.0f, 0, 0, 0, 0, cls.whiteShader );
 	re.SetColor( NULL );
 
 	reason = CL_STEFX_MissionFailedReasonText( Cvar_VariableString( "ui_missionfailed_text" ) );

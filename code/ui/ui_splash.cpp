@@ -33,6 +33,8 @@ typedef struct
 	qhandle_t quarter;
 	qhandle_t white;
 	qhandle_t bigFont;
+	qhandle_t background;
+	char backgroundMap[MAX_QPATH];
 	int tinyFont;
 	int bigFontMap[256][3];
 	qboolean bigFontLoaded;
@@ -741,6 +743,57 @@ void SP_PrecacheEFLoadingTitle(void)
 #endif
 }
 
+// The loading UI uses the renderer's 640x480 menu projection. During an
+// active-game information frame the same renderer accepts framebuffer pixels.
+extern qboolean Menus_AnyFullScreenVisible(void);
+static float s_loadWidth, s_loadHeight, s_loadScaleX, s_loadScaleY;
+
+static void SP_LoadingOverlayPic(float x, float y, float w, float h,
+    float s0, float t0, float s1, float t1, qhandle_t shader)
+{
+    re.DrawStretchPic(s_loadWidth * 0.075f + x * s_loadScaleX,
+        s_loadHeight * 0.075f + y * s_loadScaleY, w * s_loadScaleX, h * s_loadScaleY,
+        s0, t0, s1, t1, shader);
+}
+
+static qhandle_t SP_LoadingBackground(const char *mapName)
+{
+    if (!mapName || !*mapName)
+        mapName = "unknownmap";
+    if (!Q_stricmp(mapName, s_spEfLoadingAssets.backgroundMap))
+        return s_spEfLoadingAssets.background;
+
+    char path[MAX_QPATH];
+    Com_sprintf(path, sizeof(path), "levelshots/%s.dds", mapName);
+    qhandle_t shader = FS_Access(path) ? re.RegisterShaderNoMip(path) : 0;
+
+    // Several campaign maps ship only one illustration for their mission.
+    // Direct map starts have no previous gameplay frame to display.
+    static const char *const missions[] = {"scav", "stasis", "borg", "forge", "dn", "voy"};
+    for (int i = 0; !shader && i < (int)(sizeof(missions) / sizeof(missions[0])); ++i)
+    {
+        const int len = strlen(missions[i]);
+        if (!Q_stricmpn(mapName, missions[i], len) &&
+            ((mapName[len] >= '0' && mapName[len] <= '9') || !Q_stricmp(mapName + len, "boss")))
+        {
+            Com_sprintf(path, sizeof(path), "levelshots/%s1.dds", missions[i]);
+            shader = re.RegisterShaderNoMip(path);
+        }
+    }
+    if (!shader)
+    {
+        Q_strncpyz(path, "levelshots/unknownmap.dds", sizeof(path));
+        shader = re.RegisterShaderNoMip(path);
+    }
+    Q_strncpyz(s_spEfLoadingAssets.backgroundMap, mapName, sizeof(s_spEfLoadingAssets.backgroundMap));
+    s_spEfLoadingAssets.background = shader;
+#ifdef _XBOX
+    XBLog_WriteCriticalf("STEFX_LOADING_ART map=%s image=%s shader=%d canvas=%.0fx%.0f",
+        mapName, path, shader, s_loadWidth, s_loadHeight);
+#endif
+    return shader;
+}
+
 static void SP_DrawEFLoadingTitle(int x, int y, const char *text)
 {
 	const unsigned char *s = (const unsigned char *)text;
@@ -772,7 +825,7 @@ static void SP_DrawEFLoadingTitle(int x, int y, const char *text)
 			continue;
 		}
 
-		re.DrawStretchPic(
+		SP_LoadingOverlayPic(
 			drawX, (float)y, (float)sw, (float)SP_EF_BIG_FONT_HEIGHT,
 			(float)sx / 256.0f,
 			(float)sy / 256.0f,
@@ -800,19 +853,21 @@ static void SP_DrawEFLoadingPic(float x, float y, float w, float h, qhandle_t sh
 
 	if (w < 0.0f)
 	{
+		x += w;
 		w = -w;
 		s0 = 1.0f;
 		s1 = 0.0f;
 	}
 	if (h < 0.0f)
 	{
+		y += h;
 		h = -h;
 		t0 = 1.0f;
 		t1 = 0.0f;
 	}
 
 	re.SetColor(colorTable[colorIndex]);
-	re.DrawStretchPic(x, y, w, h, s0, t0, s1, t1, shader);
+	SP_LoadingOverlayPic(x, y, w, h, s0, t0, s1, t1, shader);
 }
 
 static void SP_DrawEFLoadingPicStage(float x, float y, float w, float h, qhandle_t shader, int stage, int threshold, int darkColor, int litColor)
@@ -822,7 +877,7 @@ static void SP_DrawEFLoadingPicStage(float x, float y, float w, float h, qhandle
 
 static void SP_DrawEFLoadingText(int x, int y, const char *text, int style)
 {
-	const float scale = 0.65f;
+	const float scale = 0.65f * s_loadScaleY;
 
 	if (!s_spEfLoadingAssets.tinyFont)
 	{
@@ -836,6 +891,8 @@ static void SP_DrawEFLoadingText(int x, int y, const char *text, int style)
 		return;
 	}
 
+	x = (int)(s_loadWidth * 0.075f + x * s_loadScaleX);
+	y = (int)(s_loadHeight * 0.075f + y * s_loadScaleY);
 	if (style & SP_EF_LOAD_TEXT_RIGHT)
 	{
 		x -= re.Font_StrLenPixels(text, s_spEfLoadingAssets.tinyFont, scale);
@@ -844,11 +901,16 @@ static void SP_DrawEFLoadingText(int x, int y, const char *text, int style)
 	re.Font_DrawString(x, y, text, colorTable[CT_BLACK], s_spEfLoadingAssets.tinyFont, -1, scale);
 }
 
-static qboolean SP_DrawEFLoadingScreen(void)
+extern "C" qboolean SP_DrawEFLoadingScreen(int stage)
 {
 	const int x = 10;
 	const int y = 310;
-	const int stage = 0;
+    const bool inPixels = cls.state == CA_ACTIVE && !Menus_AnyFullScreenVisible();
+    s_loadWidth = inPixels ? (float)glConfig.vidWidth : 640.0f;
+    s_loadHeight = inPixels ? (float)glConfig.vidHeight : 480.0f;
+    // Keep foreground art within the central 85% and round on 16:9 output.
+    s_loadScaleX = 0.85f * s_loadWidth / 640.0f * (glw_state && glw_state->isWidescreen ? 0.75f : 1.0f);
+    s_loadScaleY = 0.85f * s_loadHeight / 480.0f;
 
 	g_SPXBLoadingTitleStatus = 0;
 	g_SPXBLoadingTitleShader = 0;
@@ -878,8 +940,10 @@ static qboolean SP_DrawEFLoadingScreen(void)
 	XBLF("SPL: drawing EF LCARS load screen from menu/loading assets stage=%d", stage);
 #endif
 
-	re.SetColor(colorTable[CT_BLACK]);
-	re.DrawStretchPic(0, 0, 640, 480, 0, 0, 0, 0, s_spEfLoadingAssets.white);
+	const qhandle_t background = SP_LoadingBackground(SP_GetEFLoadingMapName());
+    re.SetColor(background ? NULL : colorTable[CT_BLACK]);
+    re.DrawStretchPic(0, 0, s_loadWidth, s_loadHeight, 0, 0, 1, 1,
+        background ? background : s_spEfLoadingAssets.white);
 
 	SP_DrawEFLoadingPicStage(x + 18, y + 102, 128, 64, s_spEfLoadingAssets.piece[0], stage, 1, CT_VDKPURPLE3, CT_VLTPURPLE3);
 	SP_DrawEFLoadingPicStage(x,      y + 37,   64, 64, s_spEfLoadingAssets.piece[1], stage, 2, CT_VDKBLUE1, CT_VLTBLUE1);
@@ -1907,7 +1971,7 @@ void SP_DrawSPLoadScreen( void )
 	XBLog_Write("SPL: SP_DrawSPLoadScreen entry\n");
 	SP_SetDrawTextureContext("LoadSP");
 #endif
-	if (SP_DrawEFLoadingScreen())
+	if (SP_DrawEFLoadingScreen(0))
 	{
 		return;
 	}

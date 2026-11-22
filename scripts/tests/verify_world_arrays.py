@@ -69,9 +69,28 @@ int main(){
  assert(!STEFX_WorldVerticesClaim(GL_TRIANGLES,2,ab,0,0,0));
  GLushort repeated[]={0,1,2,4,5,6,0,2,3};assert(!STEFX_WorldVerticesClaim(GL_TRIANGLES,9,repeated,0,0,0));
  tess.numVertexes=9;assert(!STEFX_WorldVerticesClaim(GL_TRIANGLES,12,ab,0,0,0));
- STEFX_WorldVerticesReset();batch(&a);failAllocation=1;
+ STEFX_WorldVerticesReset();batch(&a);failAllocation=1;allocationAttempts=0;
  assert(!STEFX_WorldVerticesClaim(GL_TRIANGLES,6,ab,0,0,0));assert(!live);
+ assert(allocationAttempts==4 && !s_worldArrayCapacity);
+ batch(&a);
+ assert(s_worldSpanCount==0 && !STEFX_WorldVerticesClaim(GL_TRIANGLES,6,ab,0,0,0));
+ assert(allocationAttempts==4);
  STEFX_WorldVerticesReset();failAllocation=0;
+ for(unsigned int divisor=2;divisor<=8;divisor*=2){
+  unsigned int capacity=STEFX_WORLD_ARRAY_CAPACITY/divisor;
+  maxAllocationBytes=capacity*sizeof(stefxWorldVertex_t);
+  batch(&a);fill(0,4,10);
+  assert(STEFX_WorldVerticesClaim(GL_TRIANGLES,6,ab,0,0,0) && s_worldArrayCapacity==capacity);
+  checkPacket(6,ab,0,0,0);
+  s_worldVertexUsed=capacity-6;batch(&b);fill(0,4,20);
+  assert(STEFX_WorldVerticesClaim(GL_TRIANGLES,6,ab,0,0,0) && s_worldVertexUsed==capacity);
+  checkPacket(6,ab,0,0,0);
+  batch(&c);assert(!STEFX_WorldVerticesClaim(GL_TRIANGLES,6,ab,0,0,0));
+  batch(&a);fill(0,4,10);assert(STEFX_WorldVerticesClaim(GL_TRIANGLES,6,ab,0,0,0));
+  checkPacket(6,ab,0,0,0);
+  STEFX_WorldVerticesReset();assert(!live && !s_worldArrayCapacity);
+ }
+ maxAllocationBytes=~0u;
  STEFX_WorldVerticesBeginBatch();g_stefxWorldBasePass=true;tess.numVertexes=0;STEFX_WorldVerticesSurface(&c,3);tess.numVertexes=3;fill(0,3,7);
  GLushort large[6000];for(int i=0;i<6000;++i)large[i]=i%3;
  assert(STEFX_WorldVerticesClaim(GL_TRIANGLES,6000,large,1,1,1));assert(s_worldArrayCommandCount==24);
@@ -84,11 +103,12 @@ int main(){
 }
 '''
 out = root/'build/research/letterbox_perf'
+out.mkdir(parents=True, exist_ok=True)
 cpp, exe = out/'world_arrays_test.cpp', out/'world_arrays_test.exe'
 cpp.write_text(prefix+core+suffix, encoding='utf-8')
 vc = Path('C:/Program Files (x86)/Microsoft Visual Studio 8/VC')
 subprocess.run(['C:/XDK_5558/XDK/xbox/bin/vc71/CL.Exe','/nologo','/MT','/EHsc',
-               '/I'+str(vc/'include'),str(cpp),'/Fo'+str(out/'world_arrays_test.obj'),
+               '/I'+str(vc/'include'),'/I'+str(root/'code/win32'),str(cpp),'/Fo'+str(out/'world_arrays_test.obj'),
                '/Fe'+str(exe),'/link','/LIBPATH:'+str(vc/'lib'),'/LIBPATH:'+str(vc/'PlatformSDK/Lib')],check=True)
 result = subprocess.run([str(exe)], capture_output=True, text=True, check=True)
 print(result.stdout)

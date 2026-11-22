@@ -398,6 +398,11 @@ void R_LoadRawLightmaps( void *data, int len, const char *psMapName ) {
 	image = (byte *)Z_Malloc(LIGHTMAP_SIZE * LIGHTMAP_SIZE * 4, TAG_TEMP_WORKSPACE, qfalse, 32);
 	COM_StripExtension(psMapName, sMapName);
 
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
+	float lightmapBoost = Cvar_VariableValue("r_stefxLightmapBoost");
+	if (lightmapBoost < 1.0f) lightmapBoost = 1.0f;
+	if (lightmapBoost > 4.0f) lightmapBoost = 4.0f;
+#endif
 	XBLF("EF: R_LoadRawLightmaps map='%s' count=%d len=%d", psMapName, count, len);
 
 	for (i = 0; i < count; ++i) {
@@ -405,17 +410,6 @@ void R_LoadRawLightmaps( void *data, int len, const char *psMapName ) {
 		int minLum = 255;
 		int maxLum = 0;
 		int sumLum = 0;
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
-		float lightmapBoost = Cvar_VariableValue("r_stefxLightmapBoost");
-		if (lightmapBoost < 1.0f)
-		{
-			lightmapBoost = 1.0f;
-		}
-		if (lightmapBoost > 4.0f)
-		{
-			lightmapBoost = 4.0f;
-		}
-#endif
 
 		for (j = 0; j < LIGHTMAP_SIZE * LIGHTMAP_SIZE; ++j) {
 			byte src[4];
@@ -427,7 +421,7 @@ void R_LoadRawLightmaps( void *data, int len, const char *psMapName ) {
 			src[3] = 255;
 			dst = &image[j * 4];
 			R_ColorShiftLightingBytes(src, dst);
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
 			if (lightmapBoost > 1.0f)
 			{
 				int r = (int)(dst[0] * lightmapBoost + 0.5f);
@@ -450,7 +444,7 @@ void R_LoadRawLightmaps( void *data, int len, const char *psMapName ) {
 		if (i < 16) {
 			XBLF("EF: RAW_LIGHTMAP_STATS index=%d min=%d max=%d avg=%d boost=%g",
 				i, minLum, maxLum, sumLum / (LIGHTMAP_SIZE * LIGHTMAP_SIZE),
-#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
 				lightmapBoost
 #else
 				1.0f
@@ -3007,9 +3001,11 @@ void R_LoadEntities( void *data, int len ) {
 
 #ifdef STEFX_ELITE_FORCE_SP
 extern void R_STEFX_ResetVisibilityReuse(void);
+extern void R_STEFX_ResetSplitFaceBounds(void);
 void R_EFBeginRawWorldMapLoad(const char *name)
 {
 	R_STEFX_ResetVisibilityReuse();
+	R_STEFX_ResetSplitFaceBounds();
 	tr.worldMapLoaded = qfalse;
 	tr.world = NULL;
 	memset(&s_worldData, 0, sizeof(s_worldData));
@@ -3216,6 +3212,7 @@ void RE_LoadWorldMap_Actual( const char *name, world_t &worldData, int index ) {
 	}
 
 	R_STEFX_ResetVisibilityReuse();
+	R_STEFX_ResetSplitFaceBounds();
 
 	// set default sun direction to be used if it isn't
 	// overridden by a shader
@@ -3337,6 +3334,9 @@ void RE_LoadWorldMap( const char *name )
 #if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
 	R_SyncRenderThread();
 	STEFX_WorldVerticesReset();
+#ifdef STEFX_ELITE_FORCE_SP
+	R_STEFX_ResetSplitFaceBounds();
+#endif
 #endif
 	memset(entityVisList, -1, sizeof(entityVisList));
 

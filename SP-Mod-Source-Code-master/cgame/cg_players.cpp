@@ -2436,6 +2436,18 @@ Returns the Z component of the surface being shadowed
 ===============
 */
 #define	SHADOW_DISTANCE		128
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+extern "C" volatile unsigned int g_SPXBCoopDistantShadows=0;
+static bool CG_DistantCoopNPCShadow(centity_t *cent) {
+    if (!cg_stefxSplitScreen.integer || cg_stefxSplitScreenPlayers.integer!=2 || !cg.snap ||
+        !cent->gent || !cent->gent->NPC || cent->currentState.number==0) return false;
+    int p2=cg_stefxSplitScreenP2Entity.integer;
+    if (p2<=0 || p2>=ENTITYNUM_WORLD || cent->currentState.number==p2 || !cg_entities[p2].currentValid) return false;
+    const float nearby=192.0f*192.0f;
+    return DistanceSquared(cent->lerpOrigin,cg.snap->ps.origin)>nearby &&
+        DistanceSquared(cent->lerpOrigin,cg_entities[p2].lerpOrigin)>nearby;
+}
+#endif
 static qboolean CG_PlayerShadow( centity_t *cent, float *shadowPlane ) {
 	vec3_t		end, mins = {-7, -7, 0}, maxs = {7, 7, 2};
 	trace_t		trace;
@@ -2456,7 +2468,13 @@ static qboolean CG_PlayerShadow( centity_t *cent, float *shadowPlane ) {
 		return qfalse;
 	}
 
-	// send a trace down from the player to the ground
+	#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+    if (cg_shadows.integer==1 && CG_DistantCoopNPCShadow(cent)) {
+        if (++g_SPXBCoopDistantShadows==1) XBLog_WriteCritical("STEFX_COOP_SHADOW: distant NPC contact decals omitted");
+        return qfalse;
+    }
+#endif
+    // send a trace down from the player to the ground
 	VectorCopy( cent->lerpOrigin, end );
 	end[2] -= SHADOW_DISTANCE;
 

@@ -497,31 +497,6 @@ static bool _wavSetPCMFormat(WAVEFORMATEX* wav, ALenum format, ALsizei freq)
 	return true;
 }
 
-static DWORD _wavFindDataOffset(ALvoid* data)
-{
-	byte *bytes = (byte *)data;
-
-	if (strncmp((char *)&bytes[0], "RIFF", 4) ||
-		strncmp((char *)&bytes[8], "WAVE", 4))
-	{
-		return 0;
-	}
-
-	DWORD pos = 12;
-	while (pos > 0 && pos < 4096)
-	{
-		DWORD chunkSize = *(DWORD *)&bytes[pos + 4];
-		if (!strncmp((char *)&bytes[pos], "data", 4))
-		{
-			return pos + 8;
-		}
-
-		pos += 8 + ((chunkSize + 1) & ~1);
-	}
-
-	return 0;
-}
-
 static int _genSource(bool is3d)
 {
 	// alloc a new source
@@ -586,6 +561,20 @@ void QAL_SetSourceVoice(ALuint source, bool isVoice)
     if (it != s_pState->m_Sources.end()) it->second->m_WantsSpatialVoice = isVoice;
 }
 
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+extern "C" { volatile unsigned int g_SPXBVoiceReuse[8]; }
+bool QAL_MatchesIdleVoiceRoute(ALuint id, ALuint buffer, bool voice) {
+    QALState::source_t::iterator source = s_pState->m_Sources.find(id);
+    if (source == s_pState->m_Sources.end()) return false;
+    if (voice && buffer) {
+        QALState::buffer_t::iterator data = s_pState->m_Buffers.find(buffer);
+        if (data != s_pState->m_Buffers.end() && data->second->m_WAVFormat.pcm.nChannels != 1)
+            voice = false;
+    }
+    return source->second->m_SpatialVoice == voice;
+}
+#endif
+
 static bool _configureSpatialVoice(QALState::SourceInfo* source,
     QALState::BufferInfo* buffer)
 {
@@ -622,12 +611,19 @@ static bool _configureSpatialVoice(QALState::SourceInfo* source,
     }
     source->m_Voices.swap(replacements);
     source->m_SpatialVoice = spatial;
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+    ++g_SPXBVoiceReuse[2];
+    g_SPXBVoiceReuse[3] += source->m_Voices.size();
+#endif
+
     source->m_GainDirty = true;
     _sourceSetRefDist(source, source->m_ReferenceDistance);
     XBLog_WriteCriticalf("STEFX_VOICE_SPATIAL: mode=%s listeners=%u name='%s'",
         spatial ? "speaker-pan" : "hrtf", (unsigned int)source->m_Voices.size(), buffer->m_DebugName);
     return true;
 }
+
+static void _dettachBuffer(ALuint source);
 
 static void _attachBuffer(ALuint source, ALuint buffer)
 {
@@ -637,6 +633,8 @@ static void _attachBuffer(ALuint source, ALuint buffer)
 	QALState::SourceInfo* sinfo = s_pState->m_Sources[source];
 	QALState::BufferInfo* binfo = s_pState->m_Buffers[buffer];
 	
+	if (sinfo->m_Buffer)
+		_dettachBuffer(source);
 	if (!_configureSpatialVoice(sinfo, binfo))
 	{
 		sinfo->m_Buffer = 0;
@@ -648,7 +646,7 @@ static void _attachBuffer(ALuint source, ALuint buffer)
 	for (QALState::SourceInfo::voice_t::iterator v = sinfo->m_Voices.begin(); 
 	v != sinfo->m_Voices.end(); ++v)
 	{
-		v->second->SetFormat((WAVEFORMATEX*)&binfo->m_WAVFormat.pcm);
+		HRESULT hr = v->second->SetFormat(&binfo->m_WAVFormat.pcm);
 
 #ifdef _FIVE_CHANNEL
 		DSMIXBINVOLUMEPAIR dsmbvp[6] = {
@@ -661,7 +659,16 @@ static void _attachBuffer(ALuint source, ALuint buffer)
 		v->second->SetMixBins(&dsmb);
 #endif
 
-		v->second->SetBufferData((char*)binfo->m_Data + binfo->m_DataOffset, binfo->m_Size);
+		if (SUCCEEDED(hr))
+			hr = v->second->SetBufferData((byte*)binfo->m_Data + binfo->m_DataOffset, binfo->m_Size);
+		if (FAILED(hr))
+		{
+			XBLog_WriteCriticalf("STEFX_AUDIO_ATTACH: failed hr=0x%08x name='%s' size=%u",
+				(unsigned int)hr, binfo->m_DebugName, binfo->m_Size);
+			_dettachBuffer(source);
+			s_pState->m_Error = AL_INVALID_OPERATION;
+			return;
+		}
 	}
 	
 	sinfo->m_Buffer = buffer;
@@ -1016,7 +1023,7 @@ ALvoid alDeleteBuffers( ALsizei n, ALuint* buffers )
 	}
 }
 
-ALvoid alBufferData( ALuint buffer, ALenum format, ALvoid* data, ALsizei size, ALsizei freq )
+void QAL_XboxBufferData(ALuint buffer, ALenum format, void *data, ALsizei size, ALsizei freq, unsigned int dataOffset)
 {
 	assert(s_pState->m_Buffers.find(buffer) != s_pState->m_Buffers.end());
 	
@@ -1039,18 +1046,8 @@ ALvoid alBufferData( ALuint buffer, ALenum format, ALvoid* data, ALsizei size, A
 		return;
 	}
 
-	info->m_Data = data;
-	info->m_DataOffset = _wavFindDataOffset(data);
-	if (!info->m_DataOffset && (format == AL_FORMAT_MONO4 || format == AL_FORMAT_STEREO4))
-	{
-		info->m_Data = NULL;
-		s_pState->m_Error = AL_INVALID_VALUE;
-		return;
-	}
-
-	info->m_Size = size;
-
-	if (format == AL_FORMAT_MONO4 || format == AL_FORMAT_STEREO4)
+	const bool adpcm = format == AL_FORMAT_MONO4 || format == AL_FORMAT_STEREO4;
+	if (adpcm)
 	{
 		_wavSetFormat(&info->m_WAVFormat.adpcm, format, freq);
 	}
@@ -1062,6 +1059,42 @@ ALvoid alBufferData( ALuint buffer, ALenum format, ALvoid* data, ALsizei size, A
 		return;
 	}
 	
+	// Xbox DirectSound needs a DWORD-aligned PCM pointer or a block-aligned
+	// ADPCM pointer. RIFF metadata chunks only guarantee word alignment.
+	const DWORD alignment = adpcm ? info->m_WAVFormat.adpcm.wfx.nBlockAlign : sizeof(DWORD);
+	if (adpcm && size % alignment)
+	{
+		s_pState->m_Error = AL_INVALID_VALUE;
+		return;
+	}
+	byte *samples = (byte *)data + dataOffset;
+	DWORD misalignment = (DWORD)samples % alignment;
+	if (misalignment)
+	{
+		if (misalignment <= dataOffset)
+		{
+			dataOffset -= misalignment;
+			memmove((byte *)data + dataOffset, samples, size);
+		}
+		else
+		{
+			// A short header (or raw samples) may have insufficient room before the payload.
+			byte *aligned = (byte *)Z_Malloc(size + alignment - 1, TAG_SND_RAWDATA, qfalse, 32);
+			if (!aligned)
+			{
+				s_pState->m_Error = AL_OUT_OF_MEMORY;
+				return;
+			}
+			dataOffset = (alignment - (DWORD)aligned % alignment) % alignment;
+			memcpy(aligned + dataOffset, samples, size);
+			if (!FS_STEFX_FreeHeapFileBuffer(data))
+				Z_Free(data);
+			data = aligned;
+		}
+	}
+	info->m_Data = data;
+	info->m_DataOffset = dataOffset;
+	info->m_Size = size;
 	s_pState->m_MemoryUsed += info->m_Size;
 	info->m_Valid = true;
 
@@ -1074,6 +1107,11 @@ ALvoid alBufferData( ALuint buffer, ALenum format, ALvoid* data, ALsizei size, A
 			fmt->nSamplesPerSec, info->m_DataOffset, info->m_Size);
 		s_qalBufferLogCount++;
 	}
+}
+
+ALvoid alBufferData(ALuint buffer, ALenum format, ALvoid *data, ALsizei size, ALsizei freq)
+{
+	QAL_XboxBufferData(buffer, format, data, size, freq, 0);
 }
 
 void QAL_XboxSetBufferDebugName(ALuint buffer, const char *name)

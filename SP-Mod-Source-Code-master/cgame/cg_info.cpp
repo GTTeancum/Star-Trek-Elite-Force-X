@@ -882,7 +882,16 @@ overylays UI_DrawConnectText from ui_connect.cpp
 */
 extern void CG_CenterGiantLine( float y, const char *string );	//cg_scoreboard
 
+#if defined(_XBOX) && !defined(STEFX_SP_HOSTED_MP)
+extern "C" qboolean SP_DrawEFLoadingScreen(int stage);
+#endif
+
 void CG_DrawInformation( void ) {
+#if defined(_XBOX) && !defined(STEFX_SP_HOSTED_MP)
+    // Use the same artwork and title-safe geometry as the early engine frames.
+    if (SP_DrawEFLoadingScreen(cg.loadLCARSStage))
+        return;
+#endif
 	const char	*s;
 	const char	*info;
 	qhandle_t	levelshot;

@@ -34,11 +34,18 @@ struct {entity_t worldEntity;int identityLightByte;}tr;
 struct {int projection2D;entity_t*currentEntity;struct{int stefxSplitView;}viewParms;}backEnd;
 struct {shader_t*shader;shaderStage_t*xstages;int currentPass,fogNum,dlightBits,fading,numVertexes;
  float xyz[1000][4],normal[1000][4];struct{DWORD colors[1000];float texcoords[2][1000][2];}svars;}tess;
+// These fixtures exercise the existing resident-world storage in isolation.
+static void STEFX_ResetMapPackets() {}
 struct cvar_t{int integer;};cvar_t enabled={1},verify={1};
 cvar_t*Cvar_Get(const char*n,const char*,int){return !strcmp(n,"r_efWorldVertices")?&enabled:&verify;}
 void XBLog_WriteCriticalf(const char*,...){}
-int live,blocks,failAllocation;
-void*XPhysicalAlloc(unsigned int bytes,unsigned int,unsigned int,unsigned int){if(failAllocation)return NULL;++live;return malloc(bytes);}
+int live,blocks,failAllocation,allocationAttempts;
+unsigned int maxAllocationBytes = ~0u;
+void*XPhysicalAlloc(unsigned int bytes,unsigned int,unsigned int,unsigned int){
+ ++allocationAttempts;
+ if(failAllocation || bytes>maxAllocationBytes)return NULL;
+ ++live;return malloc(bytes);
+}
 void XPhysicalFree(void*p){assert(blocks>0);--live;free(p);}
 struct Device {void BlockUntilIdle(){++blocks;}}device;
 struct State {Device*device;int colorArrayState;DWORD currentColor;}state={&device,1,0xffffffff};State*glw_state=&state;
@@ -81,6 +88,7 @@ int main(){int a,b,c;GLushort ix[6]={0,1,2,3,4,5};
  puts("World vertices: reordered visibility, immutable reuse, dynamic/fog exclusions, mixed-batch fallback, index/capacity bounds, verification failure, allocation failure and fenced map reset passed.");}
 '''
 out = root/'build/research/letterbox_perf'
+out.mkdir(parents=True, exist_ok=True)
 cpp = out/'world_vertices_test.cpp'
 source=(root/'code/win32/win_qgl_dx8.cpp').read_text()
 core=source.split('// STEFX_WORLD_VERTICES_BEGIN',1)[1].split('// STEFX_WORLD_VERTICES_END',1)[0]
@@ -89,7 +97,7 @@ cpp.write_text(prefix+core+suffix)
 vc = Path('C:/Program Files (x86)/Microsoft Visual Studio 8/VC')
 exe = out/'world_vertices_test.exe'
 subprocess.run(['C:/XDK_5558/XDK/xbox/bin/vc71/CL.Exe','/nologo','/MT','/EHsc',
-               '/I'+str(vc/'include'),str(cpp),'/Fo'+str(out/'world_vertices_test.obj'),
+               '/I'+str(vc/'include'),'/I'+str(root/'code/win32'),str(cpp),'/Fo'+str(out/'world_vertices_test.obj'),
                '/Fe'+str(exe),'/link','/LIBPATH:'+str(vc/'lib'),'/LIBPATH:'+str(vc/'PlatformSDK/Lib')],check=True)
 r = subprocess.run([str(exe)],capture_output=True,text=True,check=True)
 print(r.stdout)

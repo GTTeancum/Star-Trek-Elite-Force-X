@@ -47,7 +47,6 @@ MAX_QPATH = 64
 LIGHTMAP_SIZE = 128
 LIGHTMAP_RGB_BYTES = LIGHTMAP_SIZE * LIGHTMAP_SIZE * 3
 LIGHTMAP_RGB565_DDS_BYTES = 128 + LIGHTMAP_SIZE * LIGHTMAP_SIZE * 2
-DEFAULT_LIGHTMAP_BOOST = 2.5
 MULTIPLAYER_MAP_PREFIXES = ("ctf_", "hm_", "dm_", "team_")
 PACKED_BSP_LUMP_NAMES = (
     "brushes",
@@ -1088,16 +1087,9 @@ def encode_lightmap_rgb565_dds(raw_rgb: bytes, boost: float) -> bytes:
     if len(raw_rgb) != LIGHTMAP_RGB_BYTES:
         raise ValueError(f"lightmap record is {len(raw_rgb)} bytes, expected {LIGHTMAP_RGB_BYTES}")
 
-    payload = bytearray(LIGHTMAP_SIZE * LIGHTMAP_SIZE * 2)
-    out_pos = 0
-    for in_pos in range(0, len(raw_rgb), 3):
-        r = clamp_byte(raw_rgb[in_pos + 0] * boost)
-        g = clamp_byte(raw_rgb[in_pos + 1] * boost)
-        b = clamp_byte(raw_rgb[in_pos + 2] * boost)
-        value = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
-        payload[out_pos] = value & 0xFF
-        payload[out_pos + 1] = (value >> 8) & 0xFF
-        out_pos += 2
+    if boost != 1.0:
+        raw_rgb = raw_rgb.translate(bytes(clamp_byte(channel * boost) for channel in range(256)))
+    pixels = Image.frombytes("RGB", (LIGHTMAP_SIZE, LIGHTMAP_SIZE), raw_rgb)
 
     return dds_header(
         LIGHTMAP_SIZE,
@@ -1106,7 +1098,7 @@ def encode_lightmap_rgb565_dds(raw_rgb: bytes, boost: float) -> bytes:
         16,
         (0x0000F800, 0x000007E0, 0x0000001F, 0),
         False,
-    ) + bytes(payload)
+    ) + encode_rgb565(pixels)
 
 
 def encode_bgra32(image: Image.Image) -> bytes:
@@ -1495,6 +1487,11 @@ def packed_bsp_lumps(repo_root: Path, bsp_path: Path) -> tuple[dict[str, bytes],
     }
 
 
+def default_lightmap_boost(map_name: str) -> float:
+    # Retail EF single-player uses the original BSP samples at unit gain.
+    return 2.5 if Path(map_name).name.lower().startswith(MULTIPLAYER_MAP_PREFIXES) else 1.0
+
+
 def optimized_bsp_and_lightmaps(bsp_path: Path, boost: float) -> tuple[bytes, bytes, dict[str, object]]:
     data = bsp_path.read_bytes()
     lumps = parse_bsp_lumps(data, bsp_path)
@@ -1792,13 +1789,16 @@ def build_patch(args: argparse.Namespace) -> dict[str, object]:
 
     if args.bsp_mode != "none":
         for bsp_path in selected_bsp_paths(base_dir, args.bsp_maps, args.map):
+            map_name = bsp_path.relative_to(base_dir / "maps").with_suffix("").as_posix().lower()
+            boost = args.lightmap_boost
+            if boost is None:
+                boost = default_lightmap_boost(map_name)
             optimized_bsp, optimized_lightmaps, report = optimized_bsp_and_lightmaps(
-                bsp_path, args.lightmap_boost
+                bsp_path, boost
             )
             packed_lumps, packed_report = packed_bsp_lumps(
                 Path(__file__).resolve().parents[1], bsp_path
             )
-            map_name = bsp_path.relative_to(base_dir / "maps").with_suffix("").as_posix().lower()
             bsp_out_rel = f"maps/xbox/{map_name}.bsp"
             lightmap_out_rel = f"maps/xbox/{map_name}.lmpdds"
             checksum = com_block_checksum(optimized_bsp)
@@ -2159,8 +2159,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--lightmap-boost",
         type=float,
-        default=DEFAULT_LIGHTMAP_BOOST,
-        help="Brightness multiplier baked into optimized RGB565 lightmaps.",
+        help="Override the map's brightness multiplier when baking optimized RGB565 lightmaps.",
     )
     parser.add_argument(
         "--texture-mode",

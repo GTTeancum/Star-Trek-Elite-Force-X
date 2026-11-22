@@ -3,6 +3,20 @@
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 extern "C" volatile unsigned int g_SPXBCoopModelPvs[8] = {0};
 static bool s_coopModelOutsidePvs = false;
+static const model_t *s_pendingPvsModel;
+static const trRefEntity_t *s_pendingPvsEntity;
+static int s_pendingPvsFrame, s_pendingPvsOldFrame;
+static void STEFX_ClearModelPvs(void) {
+    s_pendingPvsModel = NULL;
+    s_coopModelOutsidePvs = false;
+}
+static void STEFX_BeginModelPvs(const trRefEntity_t *ent, const model_t *model) {
+    if (!tr.viewParms.stefxSplitView || !model || (model->type != MOD_MESH && model->type != MOD_MDR)) return;
+    s_pendingPvsEntity = ent;
+    s_pendingPvsModel = model;
+    s_pendingPvsFrame = ent->e.frame;
+    s_pendingPvsOldFrame = ent->e.oldframe;
+}
 static cvar_t *s_coopModelPvsMode;
 
 // STEFX_COOP_MODEL_PVS_GEOMETRY_BEGIN
@@ -69,7 +83,7 @@ static bool STEFX_CoopModelBounds(const model_t *model, const refEntity_t &e, fl
             } else if (model->type == MOD_MDR && model->md4) {
                 const md4Header_t *h = model->md4;
                 if (frames[f] >= h->numFrames) return false;
-                if (h->ofsFrames < 0) b = (const float *)R_STEFX_GetMDRFrame(h, frames[f]);
+                if (h->ofsFrames < 0) b = (const float *)R_STEFX_GetSplitMDRBounds(h, frames[f]);
                 else {
                     int size = (int)(&((md4Frame_t *)0)->bones[h->numBones]);
                     b = (const float *)((const byte *)h + h->ofsFrames + frames[f] * size);
@@ -111,11 +125,20 @@ static bool STEFX_CoopModelOutsidePvs(const trRefEntity_t *entity, const model_t
     return true;
 }
 static bool STEFX_CoopSkipHiddenSurface(const surfaceType_t *surface, const shader_t *shader) {
-    if (!s_coopModelOutsidePvs || (*surface != SF_MD3 && *surface != SF_MDR) ||
+    if ((!s_pendingPvsModel && !s_coopModelOutsidePvs) || (*surface != SF_MD3 && *surface != SF_MDR) ||
         !shader || shader == tr.shadowShader || shader == tr.projectionShadowShader ||
         shader->remappedShader || shader->numDeforms || shader->sky || shader->sort == SS_PORTAL) return false;
     for (int stage = 0; stage < shader->numUnfoggedPasses; ++stage)
         if ((shader->stages[stage].stateBits & GLS_DEPTHTEST_DISABLE) || shader->stages[stage].ss) return false;
+    if (s_pendingPvsModel) {
+        // Frustum-culled models never submit a surface. Preserve the original
+        // conservative result when the model renderer clamps an invalid frame.
+        s_coopModelOutsidePvs = s_pendingPvsEntity->e.frame == s_pendingPvsFrame &&
+            s_pendingPvsEntity->e.oldframe == s_pendingPvsOldFrame &&
+            STEFX_CoopModelOutsidePvs(s_pendingPvsEntity, s_pendingPvsModel);
+        s_pendingPvsModel = NULL;
+        if (!s_coopModelOutsidePvs) return false;
+    }
     ++g_SPXBCoopModelPvs[3];
     if (g_SPXBCoopModelPvs[3] == 1) XBLog_WriteCriticalf("STEFX_COOP_MODEL_PVS: mode=%d shader=%s cluster=%d", s_coopModelPvsMode->integer, shader->name, tr.viewCluster);
     if (s_coopModelPvsMode->integer != 1) return false; // mode 2 only observes

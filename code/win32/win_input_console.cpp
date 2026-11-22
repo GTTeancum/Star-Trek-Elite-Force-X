@@ -56,6 +56,7 @@ static qboolean IN_STEFX_IsFrontendButton(fakeAscii_t button)
 {
 	switch (button)
 	{
+	case A_JOY9: // Video screen filtering
 	case A_JOY5:
 	case A_JOY7:
 	case A_JOY8:

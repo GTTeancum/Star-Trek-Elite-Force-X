@@ -31,6 +31,7 @@
 #include "win_local.h"
 
 #include "xbox_texture_man.h"
+#include "xbox_display.h"
 
 #if defined(STEFX_RETAIL_RENDERER_ACTIVE)
 extern int R_STEFX_FogModeForView( void );
@@ -49,20 +50,21 @@ static cvar_t *s_stefxSafeAreaTop;
 static cvar_t *s_stefxSafeAreaRight;
 static cvar_t *s_stefxSafeAreaBottom;
 
-// Opt-in co-op experiment: preserve the display mode and buffer capacities.
-// The SDK scales rasterization/presentation; this does not reclaim RAM.
-static qboolean STEFX_CoopLowResolution(void)
+// Keep the physical output aspect separate from the 4:3 picture seen by
+// gameplay, HUDs and movies inside the centered multiplayer viewport.
+static bool s_xboxMultiplayerDisplay;
+static bool s_xboxPillarbox;
+static bool STEFX_MultiplayerDisplayRequested(void)
 {
-#if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
-	static cvar_t *enabled;
-	if (!enabled)
-		enabled = Cvar_Get("r_efCoopLowRes", "0", 0);
-	return enabled->integer == 1 &&
-		Cvar_VariableIntegerValue("stefx_splitScreen") &&
-		Cvar_VariableIntegerValue("stefx_splitScreenPlayers") == 2 &&
-		!Q_stricmp(Cvar_VariableString("stefx_splitScreenMode"), "coop");
+#if defined(STEFX_SP_HOSTED_MP)
+    return true;
+#elif defined(STEFX_ELITE_FORCE_SP)
+    return Cvar_VariableIntegerValue("stefx_splitScreen") != 0 &&
+        (!Q_stricmp(Cvar_VariableString("stefx_splitScreenMode"), "holomatch") ||
+         (Cvar_VariableIntegerValue("stefx_splitScreenPlayers") == 2 &&
+          !Q_stricmp(Cvar_VariableString("stefx_splitScreenMode"), "coop")));
 #else
-	return qfalse;
+    return false;
 #endif
 }
 
@@ -88,7 +90,8 @@ static void STEFX_GetSafeArea(int *left, int *top, int *right, int *bottom)
 	extern qboolean UI_EFMainMenu_IsCalibratingScreen(void);
 	if (UI_EFMainMenu_IsCalibratingScreen())
 	{
-		*left = *top = *right = *bottom = 0;
+		*left = *right = s_xboxPillarbox ? glConfig.vidWidth / 8 : 0;
+		*top = *bottom = 0;
 		return;
 	}
 #endif
@@ -100,16 +103,16 @@ static void STEFX_GetSafeArea(int *left, int *top, int *right, int *bottom)
 		s_stefxSafeAreaBottom = Cvar_Get("stefx_safeAreaBottom", "0", CVAR_ARCHIVE);
 	}
 
-	*left = STEFX_SafeAreaClamp(s_stefxSafeAreaLeft->integer, glConfig.vidWidth * 15 / 100);
-	*top = STEFX_SafeAreaClamp(s_stefxSafeAreaTop->integer, glConfig.vidHeight * 15 / 100);
-	*right = STEFX_SafeAreaClamp(s_stefxSafeAreaRight->integer, glConfig.vidWidth * 15 / 100);
-	*bottom = STEFX_SafeAreaClamp(s_stefxSafeAreaBottom->integer, glConfig.vidHeight * 15 / 100);
-	if (STEFX_CoopLowResolution() && glw_state && glw_state->isWidescreen)
+	*left = STEFX_SafeAreaClamp(s_stefxSafeAreaLeft->integer, 640 * 15 / 100) * glConfig.vidWidth / 640;
+	*top = STEFX_SafeAreaClamp(s_stefxSafeAreaTop->integer, 480 * 15 / 100) * glConfig.vidHeight / 480;
+	*right = STEFX_SafeAreaClamp(s_stefxSafeAreaRight->integer, 640 * 15 / 100) * glConfig.vidWidth / 640;
+	*bottom = STEFX_SafeAreaClamp(s_stefxSafeAreaBottom->integer, 480 * 15 / 100) * glConfig.vidHeight / 480;
+	if (s_xboxPillarbox)
 	{
 		// A 3/4-width region in 16:9 output is physically 4:3.
 		const int border = glConfig.vidWidth / 8;
-		if (*left < border) *left = border;
-		if (*right < border) *right = border;
+		*left = border + (*left * 3 + 2) / 4;
+		*right = border + (*right * 3 + 2) / 4;
 	}
 }
 
@@ -401,6 +404,7 @@ static stefxWorldSpan_t s_worldSpans[SHADER_MAX_VERTEXES];
 static unsigned short s_worldRemap[SHADER_MAX_VERTEXES];
 static GLushort s_worldIndices[SHADER_MAX_INDEXES];
 static unsigned int s_worldVertexUsed;
+static unsigned int s_worldArrayCapacity;
 static int s_worldSpanCount, s_worldCovered;
 static cvar_t *s_worldVertexCvar, *s_worldVerifyCvar;
 static bool s_worldAllocAttempted;
@@ -440,6 +444,7 @@ void STEFX_WorldVerticesBeginBatch(void) {
     s_worldSpanCount = s_worldCovered = 0;
 }
 void STEFX_WorldVerticesSurface(const void *surface, int count) {
+    if (s_worldAllocAttempted && !s_worldVertices) return;
 #if !defined(STEFX_SP_HOSTED_MP)
     if (!s_coopWorldBorrowed || !s_worldVertexCvar || s_worldVertexCvar->integer != 2) return;
 #endif
@@ -452,7 +457,10 @@ void STEFX_WorldVerticesSurface(const void *surface, int count) {
     span.surface = surface; span.first = tess.numVertexes; span.count = count;
     s_worldCovered += count;
 }
+static void STEFX_ResetMapPackets();
+
 void STEFX_WorldVerticesReset(void) {
+    STEFX_ResetMapPackets();
 #if defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
     STEFX_CoopModelReset();
 #endif
@@ -464,6 +472,7 @@ void STEFX_WorldVerticesReset(void) {
 #endif
     s_worldVertices = NULL;
     s_worldAllocAttempted = false;
+    s_worldArrayCapacity = 0;
     s_worldVertexUsed = 0;
     s_worldStorageMode = 0;
     s_worldArraysActive = false;
@@ -550,6 +559,9 @@ static stefxWorldVertex_t *STEFX_WorldVerticesClaim(GLenum mode, int count,
     const GLushort *indices, int normals, int tex0, int tex1) {
     s_worldArraysActive = false;
     STEFX_WorldInitCvars();
+    // Allocation is attempted once per map. A terminal failure also removes
+    // the per-draw ownership scan and triangle-range construction.
+    if (s_worldAllocAttempted && !s_worldVertices) return NULL;
 #if !defined(STEFX_SP_HOSTED_MP)
     if (!s_coopWorldBorrowed || s_worldVertexCvar->integer != 2) return NULL;
 #endif
@@ -673,15 +685,24 @@ static stefxWorldVertex_t *STEFX_WorldArraysClaim(int count, const GLushort *ind
     if (!s_worldAllocAttempted) {
         s_worldAllocAttempted = true; s_worldStorageMode = 2;
 #if defined(STEFX_SP_HOSTED_MP)
-        s_worldVertices = (stefxWorldVertex_t *)XPhysicalAlloc(
-            STEFX_WORLD_ARRAY_CAPACITY * sizeof(stefxWorldVertex_t),
-            MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
+        // A retail console may have free pages without a contiguous 2 MiB
+        // extent. Smaller caches use the same checked per-surface fallback.
+        for (unsigned int capacity = STEFX_WORLD_ARRAY_CAPACITY;
+             capacity >= STEFX_WORLD_ARRAY_CAPACITY / 8; capacity /= 2) {
+            s_worldVertices = (stefxWorldVertex_t *)XPhysicalAlloc(
+                capacity * sizeof(stefxWorldVertex_t), MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
+            if (s_worldVertices) {
+                s_worldArrayCapacity = capacity;
+                break;
+            }
+        }
 #else
         s_worldVertices = (stefxWorldVertex_t *)s_stefxScratchBase[1];
+        if (s_worldVertices) s_worldArrayCapacity = STEFX_WORLD_ARRAY_CAPACITY;
 #endif
         XBLog_WriteCriticalf("STEFX_WORLD_ARRAYS: allocated=%u capacity=%u bytes=%u verify=%d",
-            s_worldVertices ? 1u : 0u, STEFX_WORLD_ARRAY_CAPACITY,
-            STEFX_WORLD_ARRAY_CAPACITY * sizeof(stefxWorldVertex_t), s_worldVerifyCvar->integer);
+            s_worldVertices ? 1u : 0u, s_worldArrayCapacity,
+            s_worldArrayCapacity * sizeof(stefxWorldVertex_t), s_worldVerifyCvar->integer);
     }
     if (!s_worldVertices) return NULL;
     const shaderStage_t *stage = &tess.xstages[tess.currentPass];
@@ -705,7 +726,7 @@ static stefxWorldVertex_t *STEFX_WorldArraysClaim(int count, const GLushort *ind
             slot = (slot + 1) & (STEFX_WORLD_VERTEX_KEYS - 1);
         }
         if (probes == probeLimit || (!key->surface &&
-            (unsigned int)run.count > STEFX_WORLD_ARRAY_CAPACITY - s_worldVertexUsed)) {
+            (unsigned int)run.count > s_worldArrayCapacity - s_worldVertexUsed)) {
             ++g_SPXBWorldVertices[4]; ++g_SPXBWorldArrays[4]; return NULL;
         }
         if (!key->surface) {
@@ -805,6 +826,183 @@ static void STEFX_CoopWorldConfigure(void) {
 #endif
 
 // STEFX_WORLD_VERTICES_END
+
+#if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
+// Immutable world-space vertices. Each camera supplies its own visible surfaces
+// and exact index order. Material binding, transforms and clipping stay in GL.
+extern "C" { volatile unsigned g_SPXBSplitMapPackets[10]; }
+struct splitMapKey_t {
+    const srfSurfaceFace_t *face;
+    const shader_t *shader;
+    unsigned color;
+    unsigned short base;
+    byte uv[2];
+};
+static splitMapKey_t *s_packetKeys;
+static stefxWorldVertex_t *s_packetVertices;
+static unsigned s_packetCapacity, s_packetUsed;
+static bool s_packetTried;
+static cvar_t *s_packetMode;
+static drawSurf_t *s_packetSurfaces;
+static int s_packetCount;
+extern void RB_RestoreSplitPacketInputs(drawSurf_t *, int);
+
+static void STEFX_ResetMapPackets() {
+    if (s_packetVertices) {
+        glw_state->device->BlockUntilIdle();
+        XPhysicalFree(s_packetVertices);
+    }
+    free(s_packetKeys);
+    s_packetKeys = NULL; s_packetVertices = NULL;
+    s_packetCapacity = s_packetUsed = 0;
+    s_packetSurfaces = NULL; s_packetCount = 0; s_packetTried = false;
+}
+static bool STEFX_AllocMapPackets() {
+    if (s_packetTried) return s_packetVertices != NULL;
+    s_packetTried = true;
+    MEMORYSTATUS status;
+    GlobalMemoryStatus(&status);
+    // Leave at least a MiB of physical headroom and bound all metadata.
+    unsigned bytes = status.dwAvailPhys > (1024u*1024 + 65536u)
+        ? status.dwAvailPhys - (1024u*1024 + 65536u) : 0;
+#ifdef STEFX_SP_HOSTED_MP
+    unsigned capacity = 32768;
+#else
+    unsigned capacity = 8192;
+#endif
+    for (;capacity >= 1024; capacity /= 2) {
+        if (capacity*sizeof(stefxWorldVertex_t) > bytes) continue;
+        s_packetVertices = (stefxWorldVertex_t*)XPhysicalAlloc(
+            capacity*sizeof(stefxWorldVertex_t),MAXULONG_PTR,4096,PAGE_READWRITE|PAGE_WRITECOMBINE);
+        if (s_packetVertices) { s_packetCapacity = capacity; break; }
+    }
+    if (s_packetVertices) s_packetKeys = (splitMapKey_t*)calloc(4096,sizeof(splitMapKey_t));
+    if (!s_packetKeys && s_packetVertices) { XPhysicalFree(s_packetVertices);s_packetVertices=NULL;s_packetCapacity=0; }
+    XBLog_WriteCriticalf("STEFX_SPLIT_MAP_PACKETS: vertexCapacity=%u mode=%d",s_packetCapacity,s_packetMode->integer);
+    return s_packetVertices != NULL;
+}
+static int STEFX_PacketUV(const textureBundle_t &b) {
+    if (!b.image || b.tcGen==TCGEN_IDENTITY) return 0;
+    if (b.numTexMods) return -1;
+    if (b.tcGen==TCGEN_TEXTURE) return 1;
+    if (b.tcGen>=TCGEN_LIGHTMAP && b.tcGen<=TCGEN_LIGHTMAP3) return 2+b.tcGen-TCGEN_LIGHTMAP;
+    return -1;
+}
+static int STEFX_PacketFace(const srfSurfaceFace_t *face, unsigned color, int uv0, int uv1) {
+    const int lightmaps = face->flags & 127;
+    const int uv[2]={uv0,uv1};
+    for (int b=0;b<2;++b) {
+        if (uv[b]>=2 && (uv[b]-2>=lightmaps || tess.shader->lightmapIndex[uv[b]-2]<0)) return -1;
+    }
+    unsigned key=(((unsigned)face>>4)*2654435761u)>>20;
+    for (int probe=0;probe<16;++probe,key=(key+1)&4095) {
+        splitMapKey_t &k=s_packetKeys[key];
+        if (k.face) {
+            if (k.face==face && k.shader==tess.shader && k.color==color && k.uv[0]==uv0 && k.uv[1]==uv1)
+                return k.base;
+            continue;
+        }
+        if ((unsigned)face->numPoints > s_packetCapacity-s_packetUsed) return -1;
+        const byte *indices=(const byte*)face+face->ofsIndices;
+        for(int i=0;i<face->numIndices;++i) if(indices[i]>=face->numPoints) return -1;
+        const unsigned first=s_packetUsed;
+        const unsigned short *p=face->srfPoints;
+        const int stride=NEXT_SURFPOINT(face->flags);
+        for (int i=0;i<face->numPoints;++i,p+=stride) {
+            stefxWorldVertex_t v;
+            for (int a=0;a<3;++a) { v.xyz[a]=(float)(short)p[a];v.normal[a]=face->plane.normal[a]; }
+            v.color=color;v.pad=0;
+            for (int b=0;b<2;++b) {
+                float *dst=b?v.uv1:v.uv0;
+                if (!uv[b]) dst[0]=dst[1]=0;
+                else if (uv[b]==1) {dst[0]=(short)p[6]*(1.f/POINTS_ST_SCALE); dst[1]=(short)p[7]*(1.f/POINTS_ST_SCALE);}
+                else {const unsigned short *lm=p+VERTEX_LM+2*(uv[b]-2);
+                    dst[0]=lm[0]*(1.f/POINTS_LIGHT_SCALE);dst[1]=lm[1]*(1.f/POINTS_LIGHT_SCALE);}
+            }
+            memcpy(s_packetVertices+first+i,&v,sizeof(v));
+        }
+        k.face=face;k.shader=tess.shader;k.base=(unsigned short)first;k.color=color;k.uv[0]=uv0;k.uv[1]=uv1;
+        s_packetUsed+=face->numPoints;g_SPXBSplitMapPackets[3]=s_packetUsed;
+        return first;
+    }
+    return -1;
+}
+bool STEFX_SplitPacketNoAttributes() {return s_packetCount && s_packetMode->integer==1;}
+int STEFX_TrySplitMapPacket(drawSurf_t *surfs,int available) {
+    if (!backEnd.viewParms.stefxSplitView || backEnd.projection2D || backEnd.viewParms.isPortal ||
+        backEnd.currentEntity!=&tr.worldEntity || backEnd.currentEntity->e.renderfx ||
+        backEnd.refdef.num_dlights || tess.numIndexes || tess.numVertexes || tess.fogNum || tess.fading ||
+        tess.numPasses!=1 || tess.shader->numDeforms || tess.shader->remappedShader ||
+        tess.shader->sky || tess.shader->sort!=SS_OPAQUE || tess.shader==tr.distortionShader ||
+        tess.shader->polygonOffset || r_showtris->integer || r_shownormals->integer ||
+        r_debugSort->integer || *surfs->surface!=SF_FACE) return 0;
+    if (!s_packetMode) {
+#ifdef STEFX_SP_HOSTED_MP
+        const char *defaultMode = "1";
+#else
+        const char *defaultMode = "0";
+#endif
+        s_packetMode = Cvar_Get("r_efSplitMapPackets", defaultMode, 0);
+    }
+    if (!s_packetMode->integer) return 0;
+    const shaderStage_t &s=tess.xstages[0];
+    if (!s.active || s.ss || s.isBumpMap || s.isEnvironment ||
+        (s.rgbGen!=CGEN_IDENTITY && s.rgbGen!=CGEN_IDENTITY_LIGHTING) ||
+        (s.alphaGen!=AGEN_IDENTITY && s.alphaGen!=AGEN_SKIP) ||
+        s.bundle[0].numTexMods || s.bundle[1].numTexMods || !s.bundle[0].image) return 0;
+    const int uv0=STEFX_PacketUV(s.bundle[0]),uv1=STEFX_PacketUV(s.bundle[1]);
+    if (uv0<0 || uv1<0) return 0;
+    if (!STEFX_AllocMapPackets()) return 0;
+    unsigned color=s.rgbGen==CGEN_IDENTITY?0xffffffffu:(unsigned char)tr.identityLightByte*0x01010101u;
+    if (s.alphaGen==AGEN_IDENTITY) color|=0xff000000u;
+    int n=0,verts=0,indices=0;
+    for (;n<available && surfs[n].sort==surfs[0].sort && *surfs[n].surface==SF_FACE;++n) {
+        const srfSurfaceFace_t *face=(srfSurfaceFace_t*)surfs[n].surface;
+        if (!face->numPoints || !face->numIndices || verts+face->numPoints>=SHADER_MAX_VERTEXES ||
+            indices+face->numIndices>=SHADER_MAX_INDEXES) break;
+        int base=STEFX_PacketFace(face,color,uv0,uv1);
+        if(base<0) break;
+        const byte *src=(const byte*)face+face->ofsIndices;
+        for (int j=0;j<face->numIndices;++j) s_worldIndices[indices+j]=(GLushort)(base+src[j]);
+        verts+=face->numPoints;indices+=face->numIndices;
+    }
+    if (!n) return 0;
+    s_packetCount=n;s_packetSurfaces=surfs;
+    if (s_packetMode->integer==2) {
+        for(int i=0;i<n;++i)rb_surfaceTable[SF_FACE](surfs[i].surface);
+    } else {tess.numVertexes=verts;tess.numIndexes=indices;}
+    shader_t *shader=tess.shader;
+    RB_EndSurface();
+    s_packetCount=0;s_packetSurfaces=NULL;
+    RB_BeginSurface(shader,0);
+    return n;
+}
+static stefxWorldVertex_t *STEFX_CheckedMapPacket(int count,const GLushort *indices,int normals,int tex0,int tex1) {
+    if (!s_packetCount) return NULL;
+    bool valid=glw_state->colorArrayState && g_stefxWorldBasePass && count==tess.numIndexes && indices==tess.indexes;
+    if (valid && s_packetMode->integer==2 && (g_SPXBSplitMapPackets[4]<20000 || (g_SPXBSplitMapPackets[0]&31u)==0)) {
+        for (int i=0;i<count;++i) {
+            const unsigned idx=indices[i];
+            const stefxWorldVertex_t &v=s_packetVertices[s_worldIndices[i]];
+            if (idx>=(unsigned)tess.numVertexes || memcmp(v.xyz,tess.xyz[idx],12) ||
+                (normals && memcmp(v.normal,tess.normal[idx],12)) || v.color!=tess.svars.colors[idx] ||
+                (tex0 && memcmp(v.uv0,tess.svars.texcoords[0][idx],8)) ||
+                (tex1 && memcmp(v.uv1,tess.svars.texcoords[1][idx],8))) { valid=false;break; }
+        }
+        g_SPXBSplitMapPackets[4]+=count;
+    }
+    if (!valid) {
+        const bool restore=s_packetMode->integer==1;
+        s_packetMode->integer=0;++g_SPXBSplitMapPackets[5];
+        XBLog_WriteCritical("STEFX_SPLIT_MAP_PACKETS: original material fallback latched");
+        if(restore) RB_RestoreSplitPacketInputs(s_packetSurfaces,s_packetCount);
+        return NULL;
+    }
+    s_worldArraysActive=false;
+    ++g_SPXBSplitMapPackets[0];g_SPXBSplitMapPackets[1]+=s_packetCount;g_SPXBSplitMapPackets[2]+=count;
+    return s_packetVertices;
+}
+#endif
 
 // STEFX_INTERLEAVED_VERTICES_BEGIN
 #if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
@@ -3494,32 +3692,6 @@ GLboolean dllBeginFrame(void)
 {
 	STEFX_D3D8_InvalidateTextureStageCache();
 #ifdef _XBOX
-	{
-		static int previous = -1;
-		const int active = STEFX_CoopLowResolution() ? 1 : 0;
-		// Set scale before any drawing. Restore it when returning to ordinary SP.
-		if (active || previous == 1)
-			glw_state->device->SetBackBufferScale(active ? 0.8f : 1.0f,
-				active ? 0.8f : 1.0f);
-		if (active != previous)
-		{
-			float sx = 1.0f, sy = 1.0f;
-			glw_state->device->GetBackBufferScale(&sx, &sy);
-			int left, top, right, bottom;
-			STEFX_GetSafeArea(&left, &top, &right, &bottom);
-			g_SPXBCoopResolution[0] = 1;
-			g_SPXBCoopResolution[1] = active;
-			g_SPXBCoopResolution[2] = (unsigned int)(sx * 1000.0f + 0.5f);
-			g_SPXBCoopResolution[3] = (unsigned int)(sy * 1000.0f + 0.5f);
-			g_SPXBCoopResolution[4] = left;
-			g_SPXBCoopResolution[5] = right;
-			g_SPXBCoopResolution[6] = glConfig.vidWidth;
-			g_SPXBCoopResolution[7] = glConfig.vidHeight;
-			XBLF("STEFX_COOP_RESOLUTION: active=%d scale=%g,%g logical=%dx%d borders=%d,%d backing_buffers_unchanged=1",
-				active, sx, sy, glConfig.vidWidth, glConfig.vidHeight, left, right);
-			previous = active;
-		}
-	}
 	STEFX_ScratchFrameBegin();
 #endif
 	GLboolean result = glw_state->device->BeginScene() == D3D_OK;
@@ -3960,11 +4132,79 @@ float GLW_GetPixelAspect(void)
 {
     if (!glw_state || !glw_state->isWidescreen || glConfig.vidWidth <= 0 || glConfig.vidHeight <= 0)
         return 1.0f;
-    const float displayAspect = STEFX_CoopLowResolution() ? (4.0f / 3.0f) : (16.0f / 9.0f);
+    const float displayAspect = 16.0f / 9.0f;
     return displayAspect * (float)glConfig.vidHeight / (float)glConfig.vidWidth;
 }
 
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+static void STEFX_ShutdownActorMeshes();
+#endif
 static DWORD s_xboxPresentationFlags = 0;
+static DWORD s_xboxPresentationInterval = D3DPRESENT_INTERVAL_DEFAULT;
+static DWORD STEFX_PresentationFlags(const XboxDisplayMode &mode)
+{
+    return (mode.widescreen ? D3DPRESENTFLAG_WIDESCREEN : 0) |
+           (mode.progressive ? D3DPRESENTFLAG_PROGRESSIVE : 0);
+}
+
+static void STEFX_PublishDisplay(const XboxDisplayMode &mode, bool multiplayer)
+{
+    s_xboxMultiplayerDisplay = multiplayer;
+    s_xboxPillarbox = multiplayer && mode.widescreen;
+    glw_state->isWidescreen = mode.widescreen && !s_xboxPillarbox;
+    s_xboxPresentationFlags = STEFX_PresentationFlags(mode);
+    g_SPXBCoopResolution[0] = 1;
+    g_SPXBCoopResolution[1] = multiplayer;
+    g_SPXBCoopResolution[2] = g_SPXBCoopResolution[3] = 1000;
+    g_SPXBCoopResolution[4] = g_SPXBCoopResolution[5] = s_xboxPillarbox ? mode.width / 8 : 0;
+    g_SPXBCoopResolution[6] = mode.width;
+    g_SPXBCoopResolution[7] = mode.height;
+    XBLog_WriteCriticalf("STEFX_DISPLAY: multiplayer=%d scanout=%dx%d progressive=%d wideSignal=%d pillar=%u",
+        multiplayer, mode.width, mode.height, mode.progressive, mode.widescreen, g_SPXBCoopResolution[4]);
+}
+
+// Map and save loads register the renderer before cgame and UI copy glConfig.
+// The SP XBE can enter co-op and return to campaign without relaunching.
+void GLW_ApplyGameDisplay(void)
+{
+    if (!glw_state || !glw_state->device || !glConfig.vidWidth) return;
+    const bool multiplayer = STEFX_MultiplayerDisplayRequested();
+    if (multiplayer == s_xboxMultiplayerDisplay) return;
+    const XboxDisplayMode mode = XboxGetDisplayMode(multiplayer);
+    if (mode.width != glConfig.vidWidth || mode.height != glConfig.vidHeight ||
+        STEFX_PresentationFlags(mode) != s_xboxPresentationFlags) {
+        D3DPRESENT_PARAMETERS pp = {0};
+        pp.BackBufferWidth = mode.width;
+        pp.BackBufferHeight = mode.height;
+        pp.BackBufferFormat = D3DFMT_A8R8G8B8;
+        pp.BackBufferCount = 1;
+        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        pp.EnableAutoDepthStencil = TRUE;
+        pp.AutoDepthStencilFormat = D3DFMT_LIN_D24S8;
+        pp.Flags = STEFX_PresentationFlags(mode);
+        pp.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
+        pp.FullScreen_PresentationInterval = s_xboxPresentationInterval;
+        glw_state->device->BlockUntilIdle();
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+        STEFX_ShutdownActorMeshes();
+#endif
+        const HRESULT hr = glw_state->device->Reset(&pp);
+        if (FAILED(hr)) {
+            Com_Error(ERR_DROP, "Xbox display change to %dx%d failed (%08lx)", mode.width, mode.height, hr);
+            return;
+        }
+        glw_state->shaderMaskValid = false;
+        glw_state->streamSourceZeroValid = false;
+        STEFX_D3D8_InvalidateTextureStageCache();
+    }
+    glConfig.vidWidth = mode.width;
+    glConfig.vidHeight = mode.height;
+    glw_state->scissorBox.x1 = glw_state->scissorBox.y1 = 0;
+    glw_state->scissorBox.x2 = mode.width;
+    glw_state->scissorBox.y2 = mode.height;
+    STEFX_PublishDisplay(mode, multiplayer);
+}
+
 static void setPresent(bool vsync)
 {
 	//extern void ShowOSMemory();
@@ -3988,7 +4228,11 @@ static void setPresent(bool vsync)
 	pp.BufferSurfaces[0] = pp.BufferSurfaces[1] = pp.BufferSurfaces[2] = 0;
 	pp.DepthStencilSurface = 0;
 	glw_state->device->PersistDisplay();
-	glw_state->device->Reset(&pp);
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+	STEFX_ShutdownActorMeshes();
+#endif
+	if (SUCCEEDED(glw_state->device->Reset(&pp)))
+		s_xboxPresentationInterval = pp.FullScreen_PresentationInterval;
 
 	//ShowOSMemory();
 }
@@ -4369,6 +4613,10 @@ static void STEFX_RecordModelDraw(unsigned int handle, unsigned int shader,
 // STEFX_MODEL_DRAW_PROFILE_END
 #endif
 #include "stefx_coop_model_resident.h"
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+#include "stefx_split_gpu_skin.h"
+#endif
+
 static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
 {
 	int normals, tex0, tex1, num_streams = 2;
@@ -4437,6 +4685,12 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 	STEFX_TraceStasisD3D();
 #endif
 #ifdef _XBOX
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+    if (activeActor && STEFX_DrawActorMesh(count, (const WORD *)indices)) {
+        glw_state->inDrawBlock = false;
+        return;
+    }
+#endif
 	g_SPXBNativeSubmitStage = 0x4E440001; /* 'ND01': state ready */
 #endif
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && defined(STEFX_SP_HOSTED_MP)
@@ -4584,7 +4838,8 @@ static void dllDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoi
 	int vert_size = glw_state->drawStride * payloadVertices;
 	int index_size = count / 2;
 #if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
-	stefxWorldVertex_t *worldPayload = STEFX_WorldVerticesClaim(mode, count,
+	stefxWorldVertex_t *worldPayload = STEFX_CheckedMapPacket(count,(const GLushort*)indices,normals,tex0,tex1);
+	if (!worldPayload) worldPayload = STEFX_WorldVerticesClaim(mode, count,
 		(const GLushort *)indices, normals, tex0, tex1);
 	if (worldPayload && s_worldArraysActive) index_size = s_worldArrayCommandCount;
 #else
@@ -9054,14 +9309,6 @@ static void _createWindow(int width, int height, int colorbits, qboolean cdsFull
 
 }
 
-enum VideoModes
-{
-	VM_480i = 0,
-	VM_480p,
-	VM_720p,
-	VM_1080i
-};
-
 // Global lighteffects instance, to avoid allocating any memory
 // during GLW_Init()
 static LightEffects *getLightEffects( void )
@@ -9075,37 +9322,11 @@ void GLW_Init(int width, int height, int colorbits, qboolean cdsFullscreen)
 //	glw_state = new glwstate_t;
 	glw_state = &g_glwState;
 	InitializeRetailTexturePoolsDeferred();
-	int mode = VM_480i;
-
-	glw_state->isWidescreen = false;
-	if( XGetVideoFlags() & XC_VIDEO_FLAGS_WIDESCREEN )
-	{
-		glw_state->isWidescreen = true;
-		width = 640;
-
-
-		/*if( XGetVideoFlags() & XC_VIDEO_FLAGS_HDTV_720p )
-		{
-			width = 1280;
-			height = 720;
-			mode = VM_720p;
-		}
-
-		if( XGetVideoFlags() & XC_VIDEO_FLAGS_HDTV_1080i )
-		{
-			width = 1920;
-			height = 1080;
-			mode = VM_1080i;
-		}*/
-	}
-
-	// 480p capability is independent of the dashboard's aspect-ratio setting.
-	if( XGetVideoFlags() & XC_VIDEO_FLAGS_HDTV_480p )
-	{
-		width = 640;
-		height = 480;
-		mode = VM_480p;
-	}
+	const bool multiplayer = STEFX_MultiplayerDisplayRequested();
+	const XboxDisplayMode mode = XboxGetDisplayMode(multiplayer);
+	width = mode.width;
+	height = mode.height;
+	STEFX_PublishDisplay(mode, multiplayer);
 
 	_createWindow(width, height, colorbits, cdsFullscreen);
 	
@@ -9163,28 +9384,7 @@ D3DPRESENT_PARAMETERS present;
 	present.Windowed = FALSE;
 	present.EnableAutoDepthStencil = TRUE;
 	present.AutoDepthStencilFormat = D3DFMT_LIN_D24S8;
-	present.Flags = 0;
-	if( glw_state->isWidescreen )
-	{
-		present.Flags = D3DPRESENTFLAG_WIDESCREEN;
-		//else if(mode == VM_720p)
-		//{
-		//	present.Flags |= D3DPRESENTFLAG_PROGRESSIVE;
-		//}
-		//else if(mode == VM_1080i)
-		//{
-		//	present.Flags |= D3DPRESENTFLAG_INTERLACED; // | D3DPRESENTFLAG_FIELD;
-		//}
-
-
-        present.Flags |= D3DPRESENTFLAG_WIDESCREEN;
-	}
-
-	if(mode == VM_480p)
-	{
-		present.Flags |= D3DPRESENTFLAG_PROGRESSIVE;
-	}
-	s_xboxPresentationFlags = present.Flags;
+	present.Flags = s_xboxPresentationFlags;
 
 	present.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
 	present.FullScreen_PresentationInterval = D3DPRESENT_INTERVAL_DEFAULT;
@@ -9193,14 +9393,19 @@ D3DPRESENT_PARAMETERS present;
 	present.BufferSurfaces[2] = NULL;
 	present.DepthStencilSurface = NULL;
 
-	if (IDirect3D8::CreateDevice(D3DADAPTER_DEFAULT,
+	const HRESULT createResult = IDirect3D8::CreateDevice(D3DADAPTER_DEFAULT,
 								D3DDEVTYPE_HAL,
 								NULL,
 								D3DCREATE_HARDWARE_VERTEXPROCESSING,
 								&present,
-								&glw_state->device) != D3D_OK)
+								&glw_state->device);
+	XBLog_WriteCriticalf("STEFX_VIDEO_MODE %dx%d %s wide=%d flags=%08lx create=%08lx",
+		width, height, mode.progressive ? "progressive" : "interlaced",
+		mode.widescreen, mode.videoFlags, createResult);
+	if (FAILED(createResult))
 	{
-		Com_Printf("Failed to create device. That's bad.\n");
+		Com_Error(ERR_FATAL, "Xbox display initialization failed (%dx%d, %08lx)", width, height, createResult);
+		return;
 	}
 #if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP)
 	else
@@ -9283,6 +9488,10 @@ D3DPRESENT_PARAMETERS present;
 
 void GLW_Shutdown(void)
 {
+#if defined(_XBOX) && defined(STEFX_SP_HOSTED_MP) && defined(STEFX_ELITE_FORCE_SP)
+    STEFX_ShutdownActorMeshes();
+#endif
+
 #if defined(_XBOX) && (defined(STEFX_SP_HOSTED_MP) || defined(STEFX_ELITE_FORCE_SP))
 	STEFX_WorldVerticesReset();
 #endif
@@ -9333,10 +9542,10 @@ void SaveCompressedScreenshot(void)
 	DWORD dwSize;
 
 	glw_state->device->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &screenShot);
-	srcRect.left = 48;
-	srcRect.top = 36;
-	srcRect.right = 592;
-	srcRect.bottom = 444;
+	srcRect.left = glConfig.vidWidth * 3 / 40;
+	srcRect.top = glConfig.vidHeight * 3 / 40;
+	srcRect.right = glConfig.vidWidth - srcRect.left;
+	srcRect.bottom = glConfig.vidHeight - srcRect.top;
 	glw_state->device->CreateImageSurface(SAVE_GAME_IMAGE_W, SAVE_GAME_IMAGE_H,
 		D3DFMT_DXT1, &compressedSaveGameImage);
 	D3DXLoadSurfaceFromSurface(compressedSaveGameImage, NULL, NULL, screenShot,

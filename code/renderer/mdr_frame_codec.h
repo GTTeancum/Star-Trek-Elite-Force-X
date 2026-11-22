@@ -66,7 +66,12 @@ static bool Decode(const unsigned char *src, int size, unsigned char *dst,
     if (!StefxMdrBlock::Decode(src + 1, size - 1, type >= 4 ? work : dst, bytes)) return false;
     if (type >= 4) {
         const int frames = bytes / stride;
-        for (int i = 0; i < bytes; ++i) dst[i] = work[(i % stride) * frames + i / stride];
+        for (int frame = 0; frame < frames; ++frame) {
+            unsigned char *row = dst + frame * stride;
+            int source = frame;
+            for (int column = 0; column < stride; ++column, source += frames)
+                row[column] = work[source];
+        }
     }
     if (type == 2 || type == 3 || type == 5)
         for (int i = stride; i < bytes; ++i)

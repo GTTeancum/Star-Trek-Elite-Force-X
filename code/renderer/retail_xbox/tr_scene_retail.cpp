@@ -35,6 +35,9 @@ extern "C" volatile unsigned int g_SPXBHMSplitRenderCluster[4];
 
 #pragma warning (disable: 4512)	//default assignment operator could not be gened
 
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+extern "C" void STEFX_BeginSplitActorScene();
+#endif
 STEFX_RETAIL_NAMESPACE_BEGIN
 
 static	int			r_firstSceneDrawSurf;
@@ -1160,8 +1163,13 @@ void RE_RenderScene( const refdef_t *fd ) {
 	tr.refdef.y = fd->y;
 	tr.refdef.width = fd->width;
 	tr.refdef.height = fd->height;
-	tr.refdef.fov_x = R_STEFX_WidenFov(fd->fov_x, R_STEFX_PixelAspect());
-	tr.refdef.fov_y = fd->fov_y;
+	// Both cgames use the authored horizontal FOV and derive vertical FOV
+	// from the framebuffer. At native 16:9 that narrows the vertical view.
+	// Match the world and camera framing of the anamorphic 480p output.
+	const float worldFovScale = (!(fd->rdflags & RDF_NOWORLDMODEL) &&
+		glConfig.vidWidth == 1280 && glConfig.vidHeight == 720) ? 4.0f / 3.0f : 1.0f;
+	tr.refdef.fov_x = R_STEFX_WidenFov(fd->fov_x, R_STEFX_PixelAspect() * worldFovScale);
+	tr.refdef.fov_y = R_STEFX_WidenFov(fd->fov_y, worldFovScale);
 #if defined(_XBOX) && defined(STEFX_HW_FRAME_DIAGNOSTICS)
     // Proof is sampled read-only by the harness.
     int aspectSlot = (fd->rdflags & RDF_NOWORLDMODEL) ? 6 : 0;
@@ -1307,6 +1315,7 @@ void RE_RenderScene( const refdef_t *fd ) {
 		{
 			int slot;
 			int splitDrawSurfBase;
+			STEFX_BeginSplitActorScene();
 #ifndef STEFX_SP_HOSTED_MP
 			if (R_STEFX_CoopLODActive())
 				R_STEFX_PrepareCoopModelLODs();
