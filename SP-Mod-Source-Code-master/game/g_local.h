@@ -18,6 +18,7 @@
 #define	GAMEVERSION	"baseEF"
 
 #define BODY_QUEUE_SIZE		8
+#define DEATH_RESPAWN_DELAY_MSEC	3000
 
 #define Q3_INFINITE			16777216 
 

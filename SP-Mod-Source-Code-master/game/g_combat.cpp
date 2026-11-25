@@ -771,7 +771,7 @@ void player_die( gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int
 	}
 
 	// don't allow player to respawn for a few seconds
-	self->client->respawnTime = level.time + 3000;//self->client->ps.legsAnimTimer;
+	self->client->respawnTime = level.time + DEATH_RESPAWN_DELAY_MSEC;
 
 	//lock it to this anim forever
 	if ( self->client )

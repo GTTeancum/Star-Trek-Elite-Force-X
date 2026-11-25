@@ -2477,10 +2477,42 @@ static int xbl_IsCriticalLogLine(const char *msg)
         strstr(msg, "failed");
 }
 
+// Routine interior markers still go to both the memory ring and the file;
+// the first-render/active-frame completion makes them durable together.
+// Do not defer a fault, a save trace, or a hardware qualification checkpoint.
+static int xbl_IsBatchableFirstFrameStep(const char *msg)
+{
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP) && !defined(STEFX_HW_FRAME_DIAGNOSTICS)
+    static const char prefix[] = "STEFX_HW_CHECKPOINT: first frame ";
+    if (g_verboseLog || g_SPXBConsoleQualification || !xbl_starts_with(msg, prefix)) return 0;
+    const char *step = msg + sizeof(prefix) - 1;
+    // The one formatted step is %p/%d. Require both fields and the actual
+    // line ending; new messages or fault text sharing its prefix must flush.
+    static const char snapshot[] = "snapshots complete snap=";
+    if (xbl_starts_with(step, snapshot)) {
+        const char *p = step + sizeof(snapshot) - 1;
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+        const size_t hex = strspn(p, "0123456789abcdefABCDEF");
+        if (!hex || strncmp(p + hex, " ents=", 6)) return 0;
+        p += hex + 6;
+        if (*p == '-') ++p;
+        const size_t digits = strspn(p, "0123456789");
+        return digits && !strcmp(p + digits, "\n");
+    }
+    return !strcmp(step, "prediction complete\n") ||
+           !strcmp(step, "view complete\n") ||
+           !strcmp(step, "packet entities begin\n") ||
+           !strcmp(step, "packet entities complete\n") ||
+           !strcmp(step, "render begin\n");
+#else
+    return 0;
+#endif
+}
+
 static int xbl_ShouldFlushWrite(const char *msg, DWORD len)
 {
     if (!msg) return 0;
-    if (xbl_IsCriticalLogLine(msg)) {
+    if (xbl_IsCriticalLogLine(msg) && !xbl_IsBatchableFirstFrameStep(msg)) {
         g_fileLogFlushBytes = 0;
         g_fileLogFlushWrites = 0;
         return 1;

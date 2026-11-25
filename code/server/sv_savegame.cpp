@@ -22,6 +22,7 @@ extern byte *Compress_JPG(int *pOutputSize, int quality, int image_width, int im
 										//	(EF1 behaviour). I should maybe time/date check them though?
 
 #include "server.h"
+#include "../qcommon/stefx_save_menu.h"
 #include "..\game\statindex.h"
 #include "..\game\weapons.h"
 #include "..\game\g_items.h"
@@ -32,6 +33,7 @@ extern byte *Compress_JPG(int *pOutputSize, int quality, int image_width, int im
 
 #include "..\ui\ui_local.h"
 #include "../win32/xb_log.h"
+#include "../win32/xbox_save_preview.h"
 
 #include <stdlib.h>
 //support for mbstowcs
@@ -443,17 +445,8 @@ static qboolean SG_Create( LPCSTR psPathlessBaseName )
 
 	if (!SG_XboxIsCheckpointAlias(psPathlessBaseName))
 	{
-		// attempt to copy the last screenshot to the save game directory	
-		if( !CopyFile("z:\\saveimage.xbx", psScreenshotFilename, FALSE) )
-		{
-			CopyFile("d:\\base\\media\\defaultsaveimage.xbx", psScreenshotFilename, FALSE);
-		}
-
-		// Ditto for the large screenshot (the one we display in the ui)
-		if( !CopyFile("z:\\screenshot.xbx", psBigScreenshotFilename, FALSE) )
-		{
-			CopyFile("d:\\base\\media\\defaultsaveimage.xbx", psBigScreenshotFilename, FALSE);
-		}
+		// Optional thumbnails are never required to create the save payload.
+		XB_CopyCurrentSavePreviews(psScreenshotFilename, psBigScreenshotFilename);
 	}
 
 #else
@@ -1030,11 +1023,13 @@ void SV_LoadGame_f(void)
 }
 
 qboolean SG_GameAllowedToSaveHere(qboolean inCamera);
+static qboolean SG_WriteSavegameInternal(const char *psPathlessBaseName, qboolean qbAutosave,
+	qboolean usesNativeOrGameTiming);
 
 
 //JLF notes
 //	save game will be in charge of creating a new directory
-void SV_SaveGame_f(void)
+static void SV_SaveGameCommand(qboolean nativeMenuSubmission)
 {
 #ifdef _XBOX
 	XBLog_WriteRingMarker("STEFX_VV_SAVE: command entered");
@@ -1110,7 +1105,8 @@ void SV_SaveGame_f(void)
 	XBLog_WriteRingMarker("STEFX_VV_SAVE: permission returned true");
 #endif
 
-	if (SG_XboxIsCheckpointAlias(psFilename))
+	const qboolean checkpoint = SG_XboxIsCheckpointAlias(psFilename);
+	if (checkpoint)
 	{
 		
 #ifdef _XBOX
@@ -1132,7 +1128,10 @@ void SV_SaveGame_f(void)
 	#ifdef _XBOX
 	XBLog_WriteRingMarker("STEFX_VV_SAVE: writing save");
 	#endif
-	if (SG_WriteSavegame(psFilename, qfalse))
+	// The game queues "save auto*" from authored checkpoint triggers. Neither
+	// that command nor the native menu opens the legacy Saving popup.
+	const qboolean nativeOrCheckpoint = (nativeMenuSubmission || checkpoint) ? qtrue : qfalse;
+	if (SG_WriteSavegameInternal(psFilename, qfalse, nativeOrCheckpoint))
 	{
 #ifdef _XBOX
 		XBLF("STEFX_DN3_PROOF: save complete name='%s' map='%s'", psFilename ? psFilename : "(null)", sv_mapname ? sv_mapname->string : "");
@@ -1149,6 +1148,18 @@ void SV_SaveGame_f(void)
 }
 
 
+
+void SV_SaveGame_f(void)
+{
+	SV_SaveGameCommand(qfalse);
+}
+
+#if defined(STEFX_EF_MENU_SAVE_COMMAND)
+void SV_EFMenuSaveGame_f(void)
+{
+	SV_SaveGameCommand(qtrue);
+}
+#endif
 
 //---------------
 static void WriteGame(qboolean autosave)
@@ -1686,7 +1697,8 @@ qboolean SG_GameAllowedToSaveHere(qboolean inCamera)
 }
 
 
-qboolean SG_WriteSavegame(const char *psPathlessBaseName, qboolean qbAutosave)
+static qboolean SG_WriteSavegameInternal(const char *psPathlessBaseName, qboolean qbAutosave,
+	qboolean usesNativeOrGameTiming)
 {	
 #ifdef _XBOX
 	XBLog_WriteRingMarkerf("STEFX_SAVELOAD: SG_WriteSavegame begin name='%s' autosave=%d map='%s'", psPathlessBaseName ? psPathlessBaseName : "(null)", qbAutosave, sv_mapname ? sv_mapname->string : "");
@@ -1877,12 +1889,19 @@ qboolean SG_WriteSavegame(const char *psPathlessBaseName, qboolean qbAutosave)
 	extern void ui_resetSaveGameList();
 	ui_resetSaveGameList();
 
-	// The first thing that the deferred script is going to do is to close the "Saving"
-	// popup, but we need it to be up for at least a second, so sit here in a fucking
-	// busy-loop. See note at start of function, re: bus.
-	while( Sys_Milliseconds() < startOfFunction + 1000 )
+	// Do not pad invisible checkpoint and transition I/O to the legacy popup
+	// duration. Never complete a real popup/deferred action earlier than before.
+	bool waitForLegacyUi = true;
+#if defined(STEFX_EF_MENU_SAVE_COMMAND)
+	if (usesNativeOrGameTiming)
+		waitForLegacyUi = UI_EFSave_HasLegacyWait();
+#endif
+	if (waitForLegacyUi)
 	{
-		// Do nothing. Yes, nothing.
+		while ((unsigned int)Sys_Milliseconds() - (unsigned int)startOfFunction < 1000u)
+		{
+			// Existing legacy Saving popup timing.
+		}
 	}
 
 	Script_RunDeferred( NULL, NULL);
@@ -1890,6 +1909,13 @@ qboolean SG_WriteSavegame(const char *psPathlessBaseName, qboolean qbAutosave)
 	++g_SPXBVvSaveProof[1];
 #endif
 	return qtrue;
+}
+
+qboolean SG_WriteSavegame(const char *psPathlessBaseName, qboolean qbAutosave)
+{
+	// Direct engine callers are automatic level-entry / hub saves; console
+	// and menu submissions pass through SV_SaveGameCommand instead.
+	return SG_WriteSavegameInternal(psPathlessBaseName, qbAutosave, qtrue);
 }
 
 void loadCompressedData();

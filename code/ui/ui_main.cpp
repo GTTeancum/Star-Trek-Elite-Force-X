@@ -33,6 +33,7 @@ extern stringID_table_t animTable [MAX_ANIMATIONS+1];
 #endif
 
 #include "../qcommon/xb_settings.h"
+#include "../qcommon/stefx_save_menu.h"
 
 //JLF
 int gScrollAccum = 0;
@@ -8031,7 +8032,7 @@ qboolean UI_EFSave_Load(int index)
 	return qtrue;
 }
 
-static qboolean UI_EFSave_QueueWrite(const char *name, const char *source)
+static qboolean UI_EFSave_QueueWrite(const char *name, const char *source, qboolean nativeMenuSubmission)
 {
 	char command[MAX_SAVELOADNAME + 16];
 
@@ -8048,7 +8049,12 @@ static qboolean UI_EFSave_QueueWrite(const char *name, const char *source)
 	if (trace)
 		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save operation=%s stage=queue.begin slot=%s", source, name);
 	ui.SG_StoreSaveGameComment("");
-	Com_sprintf(command, sizeof(command), "save %s\n", name);
+#if defined(STEFX_EF_MENU_SAVE_COMMAND)
+	const char *verb = nativeMenuSubmission ? STEFX_EF_MENU_SAVE_COMMAND : "save";
+#else
+	const char *verb = "save";
+#endif
+	Com_sprintf(command, sizeof(command), "%s %s\n", verb, name);
 #ifdef _XBOX
 	XBLF("STEFX_SAVELOAD_MENU: save queued source='%s' name='%s' command='%s'",
 		source ? source : "", name, command);
@@ -8063,7 +8069,7 @@ static qboolean UI_EFSave_QueueWrite(const char *name, const char *source)
 	return qtrue;
 }
 
-qboolean UI_EFSave_CreateNew(void)
+qboolean UI_EFSave_CreateNew(qboolean nativeMenuSubmission)
 {
 	char name[MAX_SAVELOADNAME];
 	int candidate;
@@ -8089,7 +8095,7 @@ qboolean UI_EFSave_CreateNew(void)
 		}
 		if (!inUse)
 		{
-			return UI_EFSave_QueueWrite(name, "new");
+			return UI_EFSave_QueueWrite(name, "new", nativeMenuSubmission);
 		}
 	}
 
@@ -8099,7 +8105,7 @@ qboolean UI_EFSave_CreateNew(void)
 	return qfalse;
 }
 
-qboolean UI_EFSave_Overwrite(int index)
+qboolean UI_EFSave_Overwrite(int index, qboolean nativeMenuSubmission)
 {
 	if (!UI_EFSave_ValidIndex(index))
 	{
@@ -8109,7 +8115,7 @@ qboolean UI_EFSave_Overwrite(int index)
 		return qfalse;
 	}
 
-	return UI_EFSave_QueueWrite(s_savedata[index].currentSaveFileName, "overwrite");
+	return UI_EFSave_QueueWrite(s_savedata[index].currentSaveFileName, "overwrite", nativeMenuSubmission);
 }
 
 
@@ -8365,6 +8371,14 @@ static void UI_UpdateMoves( void )
 //JLF error popup
 // What popup is active at the moment?
 static xbErrorPopupType sPopup = XB_POPUP_NONE;
+
+#if defined(STEFX_EF_MENU_SAVE_COMMAND)
+bool UI_EFSave_HasLegacyWait(void)
+{
+	// Be conservative if a legacy Saving popup or a deferred action is pending.
+	return sPopup == XB_POPUP_SAVING || (uiInfo.deferredScript[0] && uiInfo.deferredScriptItem);
+}
+#endif
 
 // Creates the requested popup, then displays it.
 // Establishes context so proper action will be taken on a selection.

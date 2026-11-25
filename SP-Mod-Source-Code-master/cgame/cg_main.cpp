@@ -80,7 +80,7 @@ int vmMain( int command, int arg0, int arg1, int arg2, int arg3, int arg4, int a
 		{
 			XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT: first active frame begin serverTime=%d stereo=%d", arg0, arg1);
 		}
-		if (arg0 >= 3400 && arg0 <= 4600)
+		if (SP_XBOX_VERBOSE_RUNTIME_LOGS && arg0 >= 3400 && arg0 <= 4600)
 		{
 			XBLF("JA: CL_EARLY EF cg_vmMain before CG_DrawActiveFrame serverTime=%d stereo=%d", arg0, arg1);
 		}
@@ -93,7 +93,7 @@ int vmMain( int command, int arg0, int arg1, int arg2, int arg3, int arg4, int a
 			XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT: first active frame complete serverTime=%d stereo=%d", arg0, arg1);
 			s_stefxFirstActiveFramePending = qfalse;
 		}
-		if (arg0 >= 3400 && arg0 <= 4600)
+		if (SP_XBOX_VERBOSE_RUNTIME_LOGS && arg0 >= 3400 && arg0 <= 4600)
 		{
 			XBLF("JA: CL_EARLY EF cg_vmMain after CG_DrawActiveFrame serverTime=%d stereo=%d", arg0, arg1);
 		}

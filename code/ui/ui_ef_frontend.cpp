@@ -3759,7 +3759,7 @@ static void EFFe_HandleSaveGameKey(int key)
 #ifdef _XBOX
 		XBLF("STEFX_SAVELOAD_MENU: create-new accepted existing=%d", s_saveCount);
 #endif
-		if (UI_EFSave_CreateNew())
+		if (UI_EFSave_CreateNew(qtrue))
 		{
 			s_active = qfalse;
 			s_returnToPause = qfalse;
@@ -3780,7 +3780,7 @@ static void EFFe_HandleSaveGameKey(int key)
 #ifdef _XBOX
 	XBLF("STEFX_SAVELOAD_MENU: overwrite confirmed index=%d name='%s'", s_cursor - 1, UI_EFSave_Name(s_cursor - 1));
 #endif
-	if (UI_EFSave_Overwrite(s_cursor - 1))
+	if (UI_EFSave_Overwrite(s_cursor - 1, qtrue))
 	{
 		s_active = qfalse;
 		s_returnToPause = qfalse;

@@ -2920,7 +2920,7 @@ void CG_DrawActive( stereoFrame_t stereoView ) {
 	float		separation;
 	vec3_t		baseOrg;
 #ifdef _XBOX
-	const int xboxDrawActiveLog = (cg.time >= 3400 && cg.time <= 5000);
+	const int xboxDrawActiveLog = (SP_XBOX_VERBOSE_RUNTIME_LOGS && cg.time >= 3400 && cg.time <= 5000);
 	int xboxProfileStart;
 	if (xboxDrawActiveLog)
 	{

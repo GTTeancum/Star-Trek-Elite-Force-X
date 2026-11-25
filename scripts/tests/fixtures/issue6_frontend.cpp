@@ -1,5 +1,6 @@
 // Native frontend integration fixture. Use via verify_issue6_frontend.py.
 #include <algorithm>
+#include <cassert>
 #include <cstdarg>
 #include <vector>
 #ifndef _WIN32
@@ -51,8 +52,8 @@ const char *UI_EFSave_Comment(int i) {
 }
 const char *UI_EFSave_Map(int) { return "BORG1"; }
 bool UI_EFSave_IsCorrupt(int) { return false; }
-qboolean UI_EFSave_CreateNew() { ++createCount; return qtrue; }
-qboolean UI_EFSave_Overwrite(int i) { overwriteIndex=i; return qtrue; }
+qboolean UI_EFSave_CreateNew(qboolean nativeMenuSubmission = qfalse) { assert(nativeMenuSubmission); ++createCount; return qtrue; }
+qboolean UI_EFSave_Overwrite(int i, qboolean nativeMenuSubmission = qfalse) { assert(nativeMenuSubmission); overwriteIndex=i; return qtrue; }
 qboolean UI_EFSave_Load(int) { abort(); }
 struct { int realtime; } uis;
 struct UI {

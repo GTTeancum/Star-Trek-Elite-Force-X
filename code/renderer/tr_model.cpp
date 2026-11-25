@@ -1656,9 +1656,15 @@ static qboolean STEFX_TryStreamMdrFile(const char *name, void **buffer, qboolean
 #if defined(STEFX_HW_FRAME_DIAGNOSTICS)
 	transforms = Cvar_Get("stefx_mdr_frame_codec", "1", 0)->integer != 0;
 #endif
-	byte *transformWork = s_stefxMdrBlockPacked;
-	byte *encodedWork = s_stefxMdrBlockPacked + sizeof(s_stefxMdrBlockRaw);
-	const int encodedCapacity = sizeof(s_stefxMdrBlockPacked) - sizeof(s_stefxMdrBlockRaw);
+	const int blockFrames = header.numFrames < STEFX_MDR_BLOCK_FRAMES ? header.numFrames : STEFX_MDR_BLOCK_FRAMES;
+	const int blockBytes = blockFrames * frameSize;
+	byte *const transformWork = s_stefxMdrBlockPacked;
+	byte *const encodedWork = transformWork + blockBytes;
+	// An expanded candidate can never beat the raw block. Keep winning types
+	// and sizes (three bytes per block) in the unused tail of existing scratch;
+	// unusually wide or long models retain the full search in both passes.
+	byte *const plan = blocks * 3 <= (int)sizeof(s_stefxMdrBlockPacked) - 2 * blockBytes
+		? encodedWork + blockBytes : NULL;
 	qboolean valid = qtrue;
 	// A size pass avoids retaining the complete source file beside the packed
 	// model. Both passes read sequentially and use bounded reusable workspace.
@@ -1671,9 +1677,16 @@ static qboolean STEFX_TryStreamMdrFile(const char *name, void **buffer, qboolean
 		if (frames > STEFX_MDR_BLOCK_FRAMES) frames = STEFX_MDR_BLOCK_FRAMES;
 		int bytes = frames * frameSize;
 		if (FS_Read(s_stefxMdrBlockRaw, bytes, file) != bytes) { valid = qfalse; break; }
+		int type;
 		int encoded = StefxMdrFrame::Encode(s_stefxMdrBlockRaw, bytes, frameSize, transforms,
-			NULL, 0, transformWork, encodedWork, encodedCapacity, s_stefxMdrWork.dictionary);
+			NULL, 0, transformWork, encodedWork, blockBytes, s_stefxMdrWork.dictionary, &type);
 		if (!encoded) { valid = qfalse; break; }
+		if (plan)
+		{
+			plan[block * 3] = (byte)type;
+			plan[block * 3 + 1] = (byte)encoded;
+			plan[block * 3 + 2] = (byte)(encoded >> 8);
+		}
 		packedBytes += encoded;
 	}
 	const int allocationBytes = geometry + tableBytes + packedBytes;
@@ -1720,9 +1733,20 @@ static qboolean STEFX_TryStreamMdrFile(const char *name, void **buffer, qboolean
 		if (frames > STEFX_MDR_BLOCK_FRAMES) frames = STEFX_MDR_BLOCK_FRAMES;
 		int bytes = frames * frameSize;
 		if (FS_Read(s_stefxMdrBlockRaw, bytes, file) != bytes) { valid = qfalse; break; }
-		int count = StefxMdrFrame::Encode(s_stefxMdrBlockRaw, bytes, frameSize, transforms,
-			packed + cursor, packedBytes - cursor, transformWork, encodedWork, encodedCapacity,
-			s_stefxMdrWork.dictionary);
+		int count;
+		if (plan)
+		{
+			const byte *choice = plan + block * 3;
+			const int encoded = choice[1] | ((int)choice[2] << 8);
+			count = StefxMdrFrame::EncodeSelected(s_stefxMdrBlockRaw, bytes, frameSize, choice[0], encoded,
+				packed + cursor, packedBytes - cursor, transformWork, blockBytes, s_stefxMdrWork.dictionary);
+		}
+		else
+		{
+			count = StefxMdrFrame::Encode(s_stefxMdrBlockRaw, bytes, frameSize, transforms,
+				packed + cursor, packedBytes - cursor, transformWork, encodedWork, blockBytes,
+				s_stefxMdrWork.dictionary);
+		}
 		if (!count) { valid = qfalse; break; }
 		offsets[block] = cursor;
 		cursor += count;

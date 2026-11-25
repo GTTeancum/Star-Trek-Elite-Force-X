@@ -7,6 +7,7 @@
 #include "g_functions.h"
 #include "say.h"
 #include "g_squad.h"
+#include <limits.h>
 
 #ifdef _XBOX
 #include "../../code/win32/xb_log.h"
@@ -59,11 +60,16 @@ Determines when it's ok to ditch the corpse
 #define REMOVE_DISTANCE		256
 #define REMOVE_DISTANCE_SQR (REMOVE_DISTANCE * REMOVE_DISTANCE)
 
+static bool NPC_IsScavengerBody( const gentity_t *ent )
+{
+	return ent->client->playerTeam == TEAM_SCAVENGERS || ent->client->playerTeam == TEAM_KLINGON ||
+		ent->client->playerTeam == TEAM_HIROGEN || ent->client->playerTeam == TEAM_MALON;
+}
+
 void NPC_RemoveBody( gentity_t *self )
 {
 	// Only do all of this nonsense for Scav boys ( and girls )
-	if ( self->client->playerTeam == TEAM_SCAVENGERS || self->client->playerTeam == TEAM_KLINGON 
-		|| self->client->playerTeam == TEAM_HIROGEN || self->client->playerTeam == TEAM_MALON )
+	if ( NPC_IsScavengerBody( self ) )
 	{
 		self->nextthink = level.time + 1000; // try back in a second
 
@@ -217,21 +223,78 @@ DeadThink
 ----------------------------------------
 */
 
-static void DeadThink ( void ) 
+// A renderer frame is not a simulation clock. CG_Player may not run at all for
+// an out-of-PVS NPC; if the NPC returns, its client lerp frames can be reset.
+// Only settle locked, ordinary full-body deaths with an authored matching pose.
+// Keep the original render-driven/scripted path for everything else.
+static int NPC_SettledScavengerPose( gentity_t *ent, int legsAnim, const animation_t *animations, int lastFrame )
 {
-	if ( !NPCInfo->timeOfDeath && NPC->client != NULL && NPCInfo != NULL ) 
+	const playerState_t &ps = ent->client->ps;
+	if ( ent->health > 0 || ps.pm_type != PM_DEAD || !NPC_IsScavengerBody( ent ) ||
+		ent->sequencer || ent->taskManager || (ent->flags & FL_UNDYING) ||
+		VALIDSTRING( ent->behaviorSet[BSET_DEATH] ) ||
+		((ent->NPC->scriptFlags & SCF_FFDEATH) && VALIDSTRING( ent->behaviorSet[BSET_FFDEATH] )) ||
+		ps.powerups[PW_REGEN] || ps.powerups[PW_DISINT_1] || ps.powerups[PW_DISINT_2] || ps.powerups[PW_DISINT_3] ||
+		(ps.torsoAnim & ~ANIM_TOGGLEBIT) != legsAnim || ps.torsoAnimTimer != -1 || ps.legsAnimTimer != -1 )
+		return -1;
+
+	// Both groups have the same seven ordinary + four directional entries.
+	// Other states, including the scavengers' looping lying-death, are separate.
+	if ( legsAnim < BOTH_DEATH1 || legsAnim > BOTH_DEATHBACKWARD2 )
+		return -1;
+	const int pose = BOTH_DEAD1 + (legsAnim - BOTH_DEATH1);
+	const animation_t &fall = animations[legsAnim];
+	const animation_t &rest = animations[pose];
+	if ( fall.loopFrames != -1 || fall.frameLerp <= 0 || fall.initialLerp < 0 ||
+		rest.numFrames != 1 || rest.firstFrame != lastFrame || rest.loopFrames != -1 ||
+		rest.frameLerp <= 0 || rest.initialLerp < 0 )
+		return -1;
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
+	// Split screen doesn't use this PVS cull. Its original removal logic
+	// only tests player one's view, so don't extend the cleanup there.
+	static cvar_t *split = gi.cvar( "stefx_splitScreen", "0", 0 );
+	if ( split->integer )
+		return -1;
+#endif
+	return pose;
+}
+
+static bool NPC_DeathAnimFinished( gentity_t *ent )
+{
+	const int set = ent->client->clientInfo.animFileIndex;
+	const int legs = ent->client->ps.legsAnim & ~ANIM_TOGGLEBIT;
+	if ( set < 0 || set >= numKnownAnimFileSets || set >= MAX_ANIM_FILES ||
+		legs < 0 || legs >= MAX_ANIMATIONS )
+		return false;
+	const animation_t *animations = knownAnimFileSets[set].animations;
+	const animation_t &fall = animations[legs];
+	if ( fall.numFrames <= 0 || fall.firstFrame < 0 || fall.firstFrame > INT_MAX - (fall.numFrames - 1) )
+		return false;
+	const int last = fall.firstFrame + (fall.numFrames - 1);
+	const int pose = NPC_SettledScavengerPose( ent, legs, animations, last );
+	if ( pose < 0 || ent->client->respawnTime < DEATH_RESPAWN_DELAY_MSEC )
+		return ent->client->renderInfo.legsFrame == last;
+
+	// player_die records this timestamp in the save. Allow the entire fall,
+	// including the final interpolation interval, before changing its animation.
+	const int start = ent->client->respawnTime - DEATH_RESPAWN_DELAY_MSEC;
+	if ( level.time < start || level.time - start < fall.initialLerp ||
+		(level.time - start - fall.initialLerp) / fall.frameLerp < fall.numFrames )
+		return false;
+
+	NPC_SetAnim( ent, SETANIM_BOTH, pose, SETANIM_FLAG_OVERRIDE );
+	PM_SetLegsAnimTimer( ent, &ent->client->ps.legsAnimTimer, -1 );
+	PM_SetTorsoAnimTimer( ent, &ent->client->ps.torsoAnimTimer, -1 );
+	return true;
+}
+
+static void DeadThink ( void )
+{
+	if ( !NPCInfo->timeOfDeath )
 	{
-		//haven't finished death anim yet and were NOT given a specific amount of time to wait before removal
-		int				legsAnim	= (NPC->client->ps.legsAnim & ~ANIM_TOGGLEBIT);
-		animation_t		*animations	= knownAnimFileSets[NPC->client->clientInfo.animFileIndex].animations;
-
 		NPC->bounceCount = -1; // This is a cheap hack for optimizing the pointcontents check below
-
-		if ( NPC->client->renderInfo.legsFrame == animations[legsAnim].firstFrame + (animations[legsAnim].numFrames - 1) )
-		{
-			//reached the end of the death anim
+		if ( NPC_DeathAnimFinished( NPC ) )
 			NPCInfo->timeOfDeath = level.time + BodyRemovalPadTime( NPC );
-		}
 	}
 	else
 	{

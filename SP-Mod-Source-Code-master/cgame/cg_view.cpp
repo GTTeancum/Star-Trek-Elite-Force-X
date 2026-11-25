@@ -1496,7 +1496,8 @@ void CG_DrawActiveFrame( int serverTime, stereoFrame_t stereoView ) {
 	int xboxTailParts[6] = {0};
 	int xboxTailPartStart = 0;
 #endif
-	const int xboxDrawLog = (serverTime >= 3400 && serverTime <= 4600);
+	// Avoid constructing verbose messages that the retail logger would discard.
+	const int xboxDrawLog = (SP_XBOX_VERBOSE_RUNTIME_LOGS && serverTime >= 3400 && serverTime <= 4600);
 	const qboolean stefxHardwareFirstFrame = ( cg.clientFrame == 0 );
 	if (xboxDrawLog)
 	{

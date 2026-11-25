@@ -925,21 +925,6 @@ void R_EFPrecacheRawSurfaceShadersFromBSP( const char *name, const efbspFile_t *
 #if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP)
 static surfaceType_t s_stefxSkipSurfaceData = SF_SKIP;
 
-static qboolean R_EFShouldSkipBorgBlackBackingSurface( const dshader_t *mapShader )
-{
-	if ( !mapShader || Q_stricmpn( s_worldData.name, "maps/borg", 9 ) )
-	{
-		return qfalse;
-	}
-
-	if ( Q_stricmp( mapShader->shader, "textures/common/black" ) )
-	{
-		return qfalse;
-	}
-
-	return qtrue;
-}
-
 static qboolean R_EFShouldSkipRawDrawSurface( int shaderNum )
 {
 	const dshader_t *mapShader;
@@ -960,11 +945,8 @@ static qboolean R_EFShouldSkipRawDrawSurface( int shaderNum )
 		return qtrue;
 	}
 
-	if ( R_EFShouldSkipBorgBlackBackingSurface( mapShader ) )
-	{
-		return qtrue;
-	}
-
+	// An opaque black shader can be a visible sky/pit cap. Preserve the
+	// authored draw surface unless the BSP explicitly marks it as invisible.
 	return qfalse;
 }
 

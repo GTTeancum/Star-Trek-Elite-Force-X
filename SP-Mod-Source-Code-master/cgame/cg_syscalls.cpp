@@ -266,7 +266,7 @@ void	cgi_R_AddLightToScene( const vec3_t org, float intensity, float r, float g,
 
 void	cgi_R_RenderScene( const refdef_t *fd ) {
 #ifdef _XBOX
-	const int xboxRenderSceneLog = (cg.time >= 3400 && cg.time <= 5000);
+	const int xboxRenderSceneLog = (SP_XBOX_VERBOSE_RUNTIME_LOGS && cg.time >= 3400 && cg.time <= 5000);
 	if (xboxRenderSceneLog)
 	{
 		XBLF("JA: CL_EARLY EF cgi_R_RenderScene before syscall fd=%p time=%d vieworg=(%g,%g,%g) fov=(%g,%g) rd=0x%x",

@@ -5,6 +5,7 @@
 
 
 #include "server.h"
+#include "../qcommon/stefx_save_menu.h"
 #include "..\game\weapons.h"
 #include "..\game\g_items.h"
 #include "..\game\statindex.h"
@@ -470,6 +471,9 @@ void SV_AddOperatorCommands( void ) {
 	Cmd_AddCommand ("load", SV_LoadGame_f);
 	Cmd_AddCommand ("loadtransition", SV_LoadTransition_f);
 	Cmd_AddCommand ("save", SV_SaveGame_f);
+#if defined(STEFX_EF_MENU_SAVE_COMMAND)
+	Cmd_AddCommand (STEFX_EF_MENU_SAVE_COMMAND, SV_EFMenuSaveGame_f);
+#endif
 	Cmd_AddCommand ("wipe", SV_WipeGame_f);
 
 //#ifdef _DEBUG

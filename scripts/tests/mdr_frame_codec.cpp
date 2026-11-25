@@ -3,13 +3,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static unsigned char work[16384], candidate[16416], output[32768], decoded[16384], source[16384];
+static unsigned char work[16384], candidate[16416], output[32768], planned[32768], decoded[16384], source[16384];
 static int dictionary[4096];
 static int Check(const unsigned char *data, int bytes, int stride) {
-    int legacy = StefxMdrFrame::Encode(data, bytes, stride, false, 0, 0, work, candidate, sizeof(candidate), dictionary);
-    int count = StefxMdrFrame::Encode(data, bytes, stride, true, 0, 0, work, candidate, sizeof(candidate), dictionary);
-    assert(count > 0 && count <= legacy);
+    int legacyType, type;
+    int legacy = StefxMdrFrame::Encode(data, bytes, stride, false, 0, 0, work, candidate, sizeof(candidate), dictionary, &legacyType);
+    int count = StefxMdrFrame::Encode(data, bytes, stride, true, 0, 0, work, candidate, sizeof(candidate), dictionary, &type);
+    assert(count > 0 && count <= legacy && legacyType <= 1);
+    assert(StefxMdrFrame::Encode(data, bytes, stride, false, output, legacy, work, candidate, sizeof(candidate), dictionary) == legacy);
+    assert(StefxMdrFrame::EncodeSelected(data, bytes, stride, legacyType, legacy, planned, legacy, work, bytes, dictionary) == legacy);
+    assert(!memcmp(output, planned, legacy));
     assert(StefxMdrFrame::Encode(data, bytes, stride, true, output, count, work, candidate, sizeof(candidate), dictionary) == count);
+    assert(StefxMdrFrame::EncodeSelected(data, bytes, stride, type, count, planned, count, work, bytes, dictionary) == count);
+    assert(!memcmp(output, planned, count));
+    planned[0] = 0xa5;
+    assert(!StefxMdrFrame::EncodeSelected(data, bytes, stride, type, count, planned, count-1, work, bytes, dictionary));
+    assert(!StefxMdrFrame::EncodeSelected(data, bytes, stride, 7, count, planned, count, work, bytes, dictionary));
+    assert(!StefxMdrFrame::EncodeSelected(data, bytes, stride, type, count, planned, count, work, bytes-1, dictionary));
+    assert(planned[0] == 0xa5);
     assert(StefxMdrFrame::Decode(output, count, decoded, bytes, stride, work, sizeof(work)));
     assert(!memcmp(data, decoded, bytes));
     assert(!StefxMdrFrame::Decode(output, count-1, decoded, bytes, stride, work, sizeof(work)));
@@ -55,6 +66,6 @@ int main(int argc, char **argv) {
         }
         printf("PASS %s packed=%d\n",argv[arg],total); free(data);
     }
-    puts("PASS boundaries, all seven types, exact-size writes, truncated/invalid blocks and byte-exact frames");
+    puts("PASS boundaries, all seven types, saved-plan parity, exact-size writes, truncated/invalid blocks and byte-exact frames");
     return 0;
 }

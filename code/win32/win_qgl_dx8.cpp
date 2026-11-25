@@ -9571,67 +9571,12 @@ struct XprImage
 	BYTE pBits[CSS_IMAGE_DATA_SIZE];
 };
 
+#include "xbox_save_preview.inl"
+
 void SaveCompressedScreenshot(void)
 {
-	LPDIRECT3DSURFACE8 screenShot = 0;
-	LPDIRECT3DSURFACE8 compressedSaveGameImage = 0;
-	RECT srcRect;
-	DWORD dwSize;
-
-	glw_state->device->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &screenShot);
-	srcRect.left = glConfig.vidWidth * 3 / 40;
-	srcRect.top = glConfig.vidHeight * 3 / 40;
-	srcRect.right = glConfig.vidWidth - srcRect.left;
-	srcRect.bottom = glConfig.vidHeight - srcRect.top;
-	glw_state->device->CreateImageSurface(SAVE_GAME_IMAGE_W, SAVE_GAME_IMAGE_H,
-		D3DFMT_DXT1, &compressedSaveGameImage);
-	D3DXLoadSurfaceFromSurface(compressedSaveGameImage, NULL, NULL, screenShot,
-		NULL, &srcRect, D3DX_DEFAULT, D3DCOLOR(0));
-	XGWriteSurfaceOrTextureToXPR(compressedSaveGameImage,
-		"Z:\\screenshot.xbx", TRUE);
-	if (compressedSaveGameImage)
-	{
-		compressedSaveGameImage->Release();
-		compressedSaveGameImage = 0;
-	}
-
-	byte xbxFile[32 * 1024];
-	HANDLE hFile = CreateFile("Z:\\screenshot.xbx", GENERIC_READ | GENERIC_WRITE,
-		0, 0, OPEN_EXISTING, 0, 0);
-	if (hFile != INVALID_HANDLE_VALUE)
-	{
-		ReadFile(hFile, xbxFile, sizeof(xbxFile), &dwSize, NULL);
-		XCALCSIG_SIGNATURE xbxSig;
-		HANDLE hSig = XCalculateSignatureBegin(XCALCSIG_FLAG_SAVE_GAME);
-		XCalculateSignatureUpdate(hSig, xbxFile, dwSize);
-		XCalculateSignatureEnd(hSig, &xbxSig);
-		SetFilePointer(hFile, 0, NULL, FILE_END);
-		WriteFile(hFile, &xbxSig, sizeof(xbxSig), &dwSize, NULL);
-		CloseHandle(hFile);
-	}
-
-	glw_state->device->CreateImageSurface(64, 64, D3DFMT_DXT1,
-		&compressedSaveGameImage);
-	srcRect.left = (glConfig.vidWidth / 2) - 120;
-	srcRect.right = srcRect.left + 240;
-	srcRect.top = (glConfig.vidHeight / 2) - 120;
-	if (Cvar_VariableValue("cg_thirdPerson"))
-	{
-		srcRect.top += 60;
-	}
-	srcRect.bottom = srcRect.top + 240;
-	D3DXLoadSurfaceFromSurface(compressedSaveGameImage, NULL, NULL, screenShot,
-		NULL, &srcRect, D3DX_DEFAULT, D3DCOLOR(0));
-	XGWriteSurfaceOrTextureToXPR(compressedSaveGameImage,
-		"Z:\\saveimage.xbx", TRUE);
-	if (compressedSaveGameImage)
-	{
-		compressedSaveGameImage->Release();
-	}
-	if (screenShot)
-	{
-		screenShot->Release();
-	}
+	XB_CaptureSavePreviews(glw_state ? glw_state->device : NULL,
+		Cvar_VariableValue("cg_thirdPerson") != 0);
 }
 
 BOOL LoadCompressedScreenshot(const char *filename)

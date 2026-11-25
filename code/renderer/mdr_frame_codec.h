@@ -30,11 +30,28 @@ static void Transform(const unsigned char *src, unsigned char *work, int bytes, 
     }
 }
 
+// Write only the type selected by the size pass. The recorded size also bounds
+// this write and rejects a size mismatch; it is not a content checksum.
+static int EncodeSelected(const unsigned char *src, int bytes, int stride, int type, int size,
+    unsigned char *output, int capacity, unsigned char *work, int workCapacity, int *dictionary) {
+    if (!src || !output || !work || !dictionary || !Layout(bytes, stride) || workCapacity < bytes ||
+        type < 0 || type > 6 || size <= 1 || size > capacity ||
+        (type ? size >= bytes + 1 : size != bytes + 1)) return 0;
+    if (!type) memcpy(output + 1, src, bytes);
+    else {
+        const unsigned char *input = src;
+        if (type > 1) { Transform(src, work, bytes, stride, type - 1); input = work; }
+        if (StefxMdrBlock::Encode(input, bytes, output + 1, size - 1, dictionary) != size - 1) return 0;
+    }
+    output[0] = (unsigned char)type;
+    return size;
+}
+
 // Work and candidate are separate caller-owned buffers of at least bytes.
-// A null output performs the identical size pass without retaining the block.
+// A null output measures the block and can return its winning type for later use.
 static int Encode(const unsigned char *src, int bytes, int stride, bool transforms,
     unsigned char *output, int capacity, unsigned char *work,
-    unsigned char *candidate, int scratchCapacity, int *dictionary) {
+    unsigned char *candidate, int scratchCapacity, int *dictionary, int *selectedType = NULL) {
     if (!src || !work || !candidate || !dictionary || !Layout(bytes, stride) || scratchCapacity < bytes) return 0;
     int best = bytes + 1, bestType = 0;
     for (int mode = 0; mode < (transforms ? 6 : 1); ++mode) {
@@ -43,16 +60,9 @@ static int Encode(const unsigned char *src, int bytes, int stride, bool transfor
         int size = StefxMdrBlock::Encode(input, bytes, candidate, scratchCapacity, dictionary);
         if (size > 0 && size + 1 < best) { best = size + 1; bestType = mode + 1; }
     }
+    if (selectedType) *selectedType = bestType;
     if (!output) return best;
-    if (capacity < best) return 0;
-    output[0] = (unsigned char)bestType;
-    if (!bestType) memcpy(output + 1, src, bytes);
-    else {
-        const unsigned char *input = src;
-        if (bestType > 1) { Transform(src, work, bytes, stride, bestType - 1); input = work; }
-        if (StefxMdrBlock::Encode(input, bytes, output + 1, capacity - 1, dictionary) != best - 1) return 0;
-    }
-    return best;
+    return EncodeSelected(src, bytes, stride, bestType, best, output, capacity, work, scratchCapacity, dictionary);
 }
 
 static bool Decode(const unsigned char *src, int size, unsigned char *dst,
