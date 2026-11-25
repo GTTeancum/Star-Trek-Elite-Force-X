@@ -109,7 +109,9 @@ struct inputstate_t
 	{
 		HANDLE handle;
 		XINPUT_STATE state;
-		XINPUT_FEEDBACK feedback;
+		WORD rumbleLeft, rumbleRight;  // newest request, never driver-owned
+		int rumblePacket;             // 1-based packet for this handle, or 0
+		bool rumbleImmediate;         // sync success need not update the async status
 	};
 	controller_t controllers[IN_MAX_CONTROLLERS];
 };
@@ -117,6 +119,16 @@ struct inputstate_t
 inputstate_t *in_state = NULL;
 static cvar_t *joy_deadzone = NULL;
 
+// Driver-owned until Header.dwStatus leaves ERROR_IO_PENDING. Storage must
+// outlive a handle (and an input restart). A spare lets a newly plugged pad
+// run even if its predecessor's cancelled packet has not retired yet.
+enum { IN_RUMBLE_PACKETS_PER_PORT = 2 };
+static XINPUT_FEEDBACK s_rumblePackets[IN_MAX_CONTROLLERS][IN_RUMBLE_PACKETS_PER_PORT];
+
+static DWORD IN_RumblePacketStatus(const volatile XINPUT_FEEDBACK &packet)
+{
+	return packet.Header.dwStatus;
+}
 
 
 /*
@@ -143,8 +155,10 @@ void IN_ProcessChanges(DWORD dwInsert, DWORD dwRemove)
 		{
 			if ( in_state->controllers[port].handle )
 			{
+				IN_KillRumbleScripts(port);
 				XInputClose( in_state->controllers[port].handle );
 				in_state->controllers[port].handle = 0;
+				in_state->controllers[port].rumblePacket = 0;
 			}
 #if defined(STEFX_ELITE_FORCE_SP)
 			CL_STEFX_SplitScreen_RecordPadState( port, qfalse, IN_GetMainController(), 0, NULL, 0, 0, 0, 0 );
@@ -156,6 +170,10 @@ void IN_ProcessChanges(DWORD dwInsert, DWORD dwRemove)
 		// Open insertions.
 		if( (1 << port) & dwInsert )
 		{
+			// Do not send effects from the previous occupant (or the time
+			// this port was empty) to this controller.
+			IN_KillRumbleScripts(port);
+			in_state->controllers[port].rumblePacket = 0;
 			in_state->controllers[port].handle = XInputOpen( XDEVICE_TYPE_GAMEPAD, port, XDEVICE_NO_SLOT, NULL );
 			XBLF("STEFX: controller %d open handle=%p\n", port, in_state->controllers[port].handle);
 			IN_PadPlugged(port);
@@ -197,14 +215,23 @@ void IN_CheckForNoControllers()
 =========================================================================
 */
 
-bool IN_RumbleAdjust(int controller, int left, int right)
+void IN_RumbleAdjust(int controller, int left, int right)
+{
+	assert(controller >= 0 && controller < IN_MAX_CONTROLLERS);
+	if (!in_state) return;
+	in_state->controllers[controller].rumbleLeft = (WORD)left;
+	in_state->controllers[controller].rumbleRight = (WORD)right;
+}
+
+static void IN_FlushRumble(int controller)
 {
 	int localSlot;
 	char vibrationCvar[32];
 	static unsigned int s_stefxRumbleDisabledMask = 0;
 
-	assert(controller >= 0 && controller < IN_MAX_CONTROLLERS);
-	if ( Cvar_VariableIntegerValue( "stefx_splitScreen" ) )
+	inputstate_t::controller_t &pad = in_state->controllers[controller];
+	if (!pad.handle) return;
+	if ((pad.rumbleLeft || pad.rumbleRight) && Cvar_VariableIntegerValue("stefx_splitScreen"))
 	{
 		localSlot = CL_STEFX_SplitScreen_LocalSlotForPad( controller );
 		if ( localSlot >= 0 )
@@ -212,8 +239,7 @@ bool IN_RumbleAdjust(int controller, int left, int right)
 			Com_sprintf( vibrationCvar, sizeof( vibrationCvar ), "joy_vibestate_%d", localSlot );
 			if ( !Cvar_VariableIntegerValue( vibrationCvar ) )
 			{
-				left = 0;
-				right = 0;
+				pad.rumbleLeft = pad.rumbleRight = 0;
 				if ( !( s_stefxRumbleDisabledMask & ( 1u << localSlot ) ) )
 				{
 					XBLF( "STEFX_HM_SPLIT_RUMBLE: slot=%d port=%d enabled=0", localSlot, controller );
@@ -227,20 +253,32 @@ bool IN_RumbleAdjust(int controller, int left, int right)
 		}
 	}
 
-	// Get a device handle for the controller.  This may fail.
-	HANDLE handle = in_state->controllers[controller].handle;
+	int slot = pad.rumblePacket - 1;
+	XINPUT_FEEDBACK *packets = s_rumblePackets[controller];
+	if (slot >= 0)
+	{
+		const DWORD status = IN_RumblePacketStatus(packets[slot]);
+		if (status == ERROR_IO_PENDING) return;  // never overwrite in flight
+		if ((pad.rumbleImmediate || status == ERROR_SUCCESS) &&
+			packets[slot].Rumble.wLeftMotorSpeed == pad.rumbleLeft &&
+			packets[slot].Rumble.wRightMotorSpeed == pad.rumbleRight)
+			return;  // already applied to this handle
+	}
+	else
+	{
+		for (slot = 0; slot < IN_RUMBLE_PACKETS_PER_PORT; ++slot)
+		{
+			if (IN_RumblePacketStatus(packets[slot]) != ERROR_IO_PENDING) break;
+		}
+		if (slot == IN_RUMBLE_PACKETS_PER_PORT) return;
+	}
 
-	if (!handle) return false;
-	
-	XINPUT_FEEDBACK* fb = &in_state->controllers[controller].feedback;
-	
-	// If a prior rumble update is still pending, go away
-	if (fb->Header.dwStatus == ERROR_IO_PENDING) return false;
-
-	fb->Rumble.wLeftMotorSpeed = left;
-	fb->Rumble.wRightMotorSpeed = right;
-	
-	return ERROR_IO_PENDING == XInputSetState(handle, fb);
+	XINPUT_FEEDBACK &fb = packets[slot];
+	fb.Rumble.wLeftMotorSpeed = pad.rumbleLeft;
+	fb.Rumble.wRightMotorSpeed = pad.rumbleRight;
+	const DWORD result = XInputSetState(pad.handle, &fb);
+	pad.rumbleImmediate = (result == ERROR_SUCCESS);
+	pad.rumblePacket = (result == ERROR_IO_PENDING || result == ERROR_SUCCESS) ? slot + 1 : 0;
 }
 
 
@@ -269,6 +307,16 @@ IN_Shutdown
 void IN_Shutdown( void ) {
 	IN_RumbleShutdown();
 
+	if (in_state)
+	{
+		for (int port = 0; port < IN_MAX_CONTROLLERS; ++port)
+		{
+			if (!in_state->controllers[port].handle) continue;
+			IN_RumbleAdjust(port, 0, 0);
+			IN_FlushRumble(port);
+			XInputClose(in_state->controllers[port].handle);
+		}
+	}
 	delete in_state;
 	in_state = NULL;
 }
@@ -903,6 +951,10 @@ void IN_Frame (void)
 		IN_UIEmptyQueue();
 		if (xboxTraceInput) XBLF("JA: IN_TIGHT #%d before IN_RumbleFrame", callCount - 1);
 		IN_RumbleFrame();
+		// Pump even if no scripts remain, the game is paused, or vibration
+		// is disabled: the previous nonzero packet may have just completed.
+		for (int port = 0; port < IN_MAX_CONTROLLERS; ++port)
+			IN_FlushRumble(port);
 		if (xboxTraceInput) XBLF("JA: IN_TIGHT #%d exit", callCount - 1);
 	}
 }

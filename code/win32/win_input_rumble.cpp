@@ -9,7 +9,6 @@
  * DISTRIBUTION, OR DISCLOSURE IS STRICTLY PROHIBITED WITHOUT THE PRIOR 
  * EXPRESS WRITTEN PERMISSION OF VICARIOUS VISIONS, INC.
  */
-#include "../cgame/cg_local.h"
 #include "../server/exe_headers.h"
 
 #include "win_local.h"
@@ -59,7 +58,6 @@ struct rumblescript_t
 struct rumblestatus_t
 {
 	bool changed;
-	bool killed;
 	bool paused;
 	int timePaused;
 };
@@ -77,7 +75,7 @@ cvar_t* in_useRumble = NULL;
 
 bool IN_usingRumble( void )
 {
-	return in_useRumble->integer;
+	return in_useRumble && in_useRumble->integer;
 }
 
 
@@ -245,9 +243,8 @@ void IN_KillRumbleState(int whichScript, int index)
 // Stops the script, if script has autodelete on then it will get deleted, otherwise it will only stop
 void IN_KillRumbleScript(int whichScript)
 {
-	if (!IN_usingRumble()) return;
-
 	assert (whichScript >= 0 && whichScript < MAX_RUMBLE_SCRIPTS);
+	if (!rumbleScripts[whichScript].states) return;
 
 	rumbleScripts[whichScript].nextStateAt = 0;
 	if (rumbleScripts[whichScript].autoDelete)
@@ -263,9 +260,7 @@ void IN_KillRumbleScript(int whichScript)
 // Stops Rumbling for specific controller
 void IN_KillRumbleScripts(int controller)
 {
-	if (!IN_usingRumble()) return;
 	if (controller <= -1 || controller >= MAX_RUMBLE_CONTROLLERS) return;
-	if (rumbleStatus[controller].killed == true) return;
 
 	for (int i = 0; i < MAX_RUMBLE_SCRIPTS; i++)
 	{
@@ -273,30 +268,21 @@ void IN_KillRumbleScripts(int controller)
 			IN_KillRumbleScript(i);
 	}
 
-	rumbleStatus[controller].killed = IN_RumbleAdjust(controller, 0, 0);
+	IN_RumbleAdjust(controller, 0, 0);
 }
 
 // Stops Rumbling on all controllers
 void IN_KillRumbleScripts( void )
 {
-	if (!IN_usingRumble()) return;
-
 	for (int i = 0; i < MAX_RUMBLE_SCRIPTS; i++)
 		IN_KillRumbleScript(i);
 
 	for (int j = 0; j < MAX_RUMBLE_CONTROLLERS; j++)
-	{
-		if (!rumbleStatus[j].killed)
-		{
-			rumbleStatus[j].killed = IN_RumbleAdjust(j, 0, 0);
-		}
-	}
+		IN_RumbleAdjust(j, 0, 0);
 }
 
 void IN_DeleteRumbleScript(int whichScript)
 {
-	if (!IN_usingRumble()) return;
-
 	assert (whichScript >= 0 && whichScript < MAX_RUMBLE_SCRIPTS);
 
 	if (rumbleScripts[whichScript].states)
@@ -406,12 +392,9 @@ int IN_RunSpecialScript(int whichScript)
 
 int IN_Time()
 {
-#if defined(STEFX_SP_HOSTED_MP)
+	// Motor pulses use real milliseconds. The campaign links the EF cgame;
+	// the host's inherited JA cg_t has its time field at a different offset.
 	return Sys_Milliseconds();
-#else
-	//mb return ClientManager::ActiveClient().cg.time;
-	return cg.time;
-#endif
 }
 
 int testTime;
@@ -435,7 +418,6 @@ void IN_ExecuteRumbleScript(int whichScript)
 	rumbleScripts[whichScript].nextStateAt = -1;//IN_Time() + cmd;
 	
 	rumbleStatus[rumbleScripts[whichScript].controller].changed = true;
-	rumbleStatus[rumbleScripts[whichScript].controller].killed = false;
 
 	testTime = IN_Time();
 }
@@ -444,18 +426,16 @@ void IN_ExecuteRumbleScript(int whichScript)
 
 void IN_PauseRumbling(int controller)
 { 
-	if (!IN_usingRumble()) return;
 	if (controller <= -1 || controller >= MAX_RUMBLE_CONTROLLERS) return;
 	if (rumbleStatus[controller].paused == true) return;
 
 	rumbleStatus[controller].timePaused = IN_Time();
-	rumbleStatus[controller].paused = IN_RumbleAdjust(controller, 0, 0);
+	rumbleStatus[controller].paused = true;
 	IN_KillRumbleScripts();
 }
 
 void IN_UnPauseRumbling(int controller)
 {
-	if (!IN_usingRumble()) return;
 	if (controller <= -1 || controller >= MAX_RUMBLE_CONTROLLERS) return;
 	
 	// can't unpause a control that wasn't paused
@@ -474,7 +454,6 @@ void IN_UnPauseRumbling(int controller)
 
 	rumbleStatus[controller].paused = false; 
 	rumbleStatus[controller].changed = true;
-	rumbleStatus[controller].killed = false;
 
 	IN_KillRumbleScripts();
 }
@@ -544,11 +523,16 @@ bool IN_AdvanceToNextState(int whichScript)
 // Other possibility is some kind of sum of all the speeds 
 // Call this once a frame, to update the controller based on the rumble states
 extern qboolean _UI_IsFullscreen( void );
-void IN_UpdateRumbleFromStates()
+extern int Key_GetCatcher( void );
+void IN_RumbleFrame()
 {
-	if(_UI_IsFullscreen())
+	// The EF pause/options UI owns the input catcher even when it is not a
+	// legacy fullscreen menu. Stopping is never gated by the rumble setting.
+	if (!IN_usingRumble() || (cl_paused && cl_paused->integer) ||
+		(Key_GetCatcher() & KEYCATCH_UI) || _UI_IsFullscreen())
 	{
 		IN_KillRumbleScripts();
+		rumble_timer = IN_Time();
 		return;
 	}
 
@@ -564,12 +548,6 @@ void IN_UpdateRumbleFromStates()
 		// If rumble is paused on current controller than skip this rumble state
 		if ( rumbleStatus[rumbleScripts[i].controller].paused) continue;
 
-//*mb	ClientManager::ActivateByControllerId(rumbleScripts[i].controller);
-		if ( !IN_usingRumble() ) 
-		{
-			IN_KillRumbleScript(i);
-			continue;
-		}
 /*mb
 		if (!ClientManager::ActiveGentity() || !G_ActivePlayerNormal())
 		{
@@ -595,7 +573,6 @@ void IN_UpdateRumbleFromStates()
 			if (rumbleScripts[i].nextStateAt > 0) 
 			{	
 				rumbleStatus[rumbleScripts[i].controller].changed = true;
-				rumbleStatus[rumbleScripts[i].controller].killed = false;
 				if (!IN_AdvanceToNextState(i))		// Returns false if reached the end of script
 					continue;
 			}
@@ -615,12 +592,11 @@ void IN_UpdateRumbleFromStates()
 		// paused, so do nothing for this controller
 		if ( rumbleStatus[i].paused) continue;
 
-		// Only update the actual hardware if a state has changed
+		// The Xbox output queue keeps this target after the script ends.
 		if (!rumbleStatus[i].changed) continue;
 		
 		IN_RumbleAdjust(i, value[i][0], value[i][1]);
 		
-		// State has changed
 		rumbleStatus[i].changed = false;
 	}
 
@@ -646,6 +622,7 @@ IN_RumbleInit
 void IN_RumbleInit (void) {
 	memset(&rumbleStatus, 0, sizeof(rumblestatus_t)*MAX_RUMBLE_CONTROLLERS);
 	memset(&rumbleScripts, 0, sizeof(rumblescript_t)*MAX_RUMBLE_SCRIPTS);
+	rumble_timer = IN_Time();
 
 	in_useRumble = Cvar_Get( "in_useRumble", "1", 0 );
 	in_shaking_rumble	= Cvar_Get("in_shaking_rumble", "1", 0);
@@ -665,26 +642,4 @@ void IN_RumbleShutdown (void) {
 		rumbleScripts[i].states = 0;
 		rumbleScripts[i].nextStateAt = 0;
 	}
-}
-
-
-/*
-==================
-IN_RumbleFrame
-==================
-*/
-void IN_RumbleFrame (void)
-{
-	// Check to see if we need to pause rumbling
-	if(cl_paused->integer && !rumbleStatus[IN_GetMainController()].paused)
-	{
-		IN_PauseRumbling(IN_GetMainController());
-	}
-	else if(!cl_paused->integer && rumbleStatus[IN_GetMainController()].paused)
-	{
-		IN_UnPauseRumbling(IN_GetMainController());
-	}
-	
-	// Update the states
-	IN_UpdateRumbleFromStates();
 }

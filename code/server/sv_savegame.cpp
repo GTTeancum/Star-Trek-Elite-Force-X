@@ -378,8 +378,15 @@ static qboolean SG_Create( LPCSTR psPathlessBaseName )
 	else
 	{
 		bSavingCheckpoint = false;
-		mbstowcs((wchar_t*)widecharstring, psPathlessBaseName, filepathlength);
-		if ( ERROR_SUCCESS != XCreateSaveGame("U:\\", (LPCWSTR)widecharstring, OPEN_ALWAYS, 0, psLocalFilename, filepathlength))
+		const bool trace = Cvar_VariableIntegerValue("stefx_saveTrace") != 0;
+		if (mbstowcs((wchar_t*)widecharstring, psPathlessBaseName, filepathlength) >= filepathlength)
+			return qfalse;
+		if (trace)
+			XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save stage=container.begin slot=%s", psPathlessBaseName);
+		const DWORD createResult = XCreateSaveGame("U:\\", (LPCWSTR)widecharstring, OPEN_ALWAYS, 0, psLocalFilename, filepathlength);
+		if (trace)
+			XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save stage=container.end slot=%s result=%lu", psPathlessBaseName, createResult);
+		if (createResult != ERROR_SUCCESS)
 			return qfalse;
 
 		// create the path for the screenshot file
@@ -393,8 +400,13 @@ static qboolean SG_Create( LPCSTR psPathlessBaseName )
 		// create the path for the savegame
 		Q_strcat(psLocalFilename, filepathlength, "JK3SG.xsv");
 
-		sg_Handle = CreateFile(psLocalFilename, GENERIC_WRITE, FILE_SHARE_READ, 0, 
-			CREATE_ALWAYS,	FILE_ATTRIBUTE_NORMAL, 0);
+		if (trace)
+			XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save stage=payload.begin slot=%s", psPathlessBaseName);
+		sg_Handle = CreateFile(psLocalFilename, GENERIC_WRITE, FILE_SHARE_READ, 0,
+			CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0);
+		if (trace)
+			XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save stage=payload.end slot=%s ok=%d",
+				psPathlessBaseName, sg_Handle != INVALID_HANDLE_VALUE && sg_Handle != NULL);
 	}
 	// Overwrites must truncate the old payload before hashing the new file.
 	// An old tail contributes to GetFileSize but is not part of the new hash.
@@ -721,31 +733,28 @@ qboolean SG_Open( LPCSTR psPathlessBaseName )
 
 #ifdef _XBOX
 	unsigned short saveGameName[filepathlength];
-	char directoryInfo[filepathlength];
 	char psLocalFilename[filepathlength];
-	DWORD bytesRead;
+	DWORD bytesRead = 0;
 	
 	if (SG_XboxIsCheckpointAlias(psPathlessBaseName))
 	{
 		XBLog_WriteRingMarkerf("STEFX_SAVELOAD: SG_Open checkpoint alias='%s' path='%s'", psPathlessBaseName ? psPathlessBaseName : "(null)", CHECK_POINT_STRING);
-		sg_Handle = NULL;
-		sg_Handle = CreateFile(CHECK_POINT_STRING,GENERIC_READ, FILE_SHARE_READ, 0, 
-		OPEN_EXISTING,	FILE_ATTRIBUTE_NORMAL, 0);
+		Q_strncpyz(psLocalFilename, CHECK_POINT_STRING, sizeof(psLocalFilename));
 	}
 	else
 	{
-		mbstowcs((wchar_t*)saveGameName, psPathlessBaseName,filepathlength);
-	
-		XCreateSaveGame("U:\\", (LPCWSTR)saveGameName, OPEN_EXISTING, 0,directoryInfo, filepathlength);
-
-		strcpy (psLocalFilename , directoryInfo);
-		strcat (psLocalFilename , "JK3SG.xsv");		
-
-		sg_Handle = NULL;
-		sg_Handle = CreateFile(psLocalFilename, GENERIC_READ, FILE_SHARE_READ, 0, 
-			OPEN_EXISTING,	FILE_ATTRIBUTE_NORMAL, 0);	
+		if (mbstowcs((wchar_t*)saveGameName, psPathlessBaseName, filepathlength) >= filepathlength ||
+			XCreateSaveGame("U:\\", (LPCWSTR)saveGameName, OPEN_EXISTING, 0, psLocalFilename, sizeof(psLocalFilename)) != ERROR_SUCCESS)
+			return qfalse;
+		if (strlen(psLocalFilename) + sizeof("JK3SG.xsv") > sizeof(psLocalFilename))
+			return qfalse;
+		Q_strcat(psLocalFilename, sizeof(psLocalFilename), "JK3SG.xsv");
 	}
 
+	sg_Handle = CreateFile(psLocalFilename, GENERIC_READ, FILE_SHARE_READ, 0,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+	if (sg_Handle == INVALID_HANDLE_VALUE)
+		sg_Handle = NULL;
 	if (!sg_Handle)
 #else
 
@@ -784,8 +793,8 @@ qboolean SG_Open( LPCSTR psPathlessBaseName )
 	{
 		XBLog_WriteRingMarkerf("STEFX_SAVELOAD: SG_Open wrong length name='%s' header=%lu actual=%u", psPathlessBaseName ? psPathlessBaseName : "(null)", sg_validationHeader.dwFileLength, filelength);
 		SG_Close();
-		Com_Printf (S_COLOR_RED "File \"%s\" has wrong length");
-		  return qfalse;
+		Com_Printf (S_COLOR_RED "File \"%s\" has wrong length", psPathlessBaseName);
+		return qfalse;
 	}
 	XBLog_WriteRingMarkerf("STEFX_SAVELOAD: SG_Open header ok name='%s' length=%u headerSize=%lu sigSize=%lu", psPathlessBaseName ? psPathlessBaseName : "(null)", filelength, dwHeaderSize, dwSigSize);
 
@@ -856,7 +865,7 @@ void SV_WipeGame_f(void)
 */
 void SG_StoreSaveGameComment(const char *sComment)
 {	
-	memmove(saveGameComment,sComment,iSG_COMMENT_SIZE);
+	Q_strncpyz(saveGameComment, sComment ? sComment : "", sizeof(saveGameComment));
 }
 
 qboolean SV_TryLoadTransition( const char *mapname )
@@ -1404,7 +1413,7 @@ void SG_ReadServerConfigStrings( void )
 
 static void SG_WriteComment(qboolean qbAutosave, LPCSTR psMapName)
 {
-	char	sComment[iSG_COMMENT_SIZE];
+	char	sComment[iSG_COMMENT_SIZE] = {0};
 	
 	int difflevel = Cvar_VariableIntegerValue("g_spskill");
 	int handicap = Cvar_VariableIntegerValue("handicap");
@@ -1435,7 +1444,7 @@ static void SG_WriteComment(qboolean qbAutosave, LPCSTR psMapName)
 	}
 	else
 	{
-		strcpy(sComment,saveGameComment);
+		Q_strncpyz(sComment, saveGameComment, sizeof(sComment));
 	}
 
 	SG_Append('COMM', sComment, sizeof(sComment));
@@ -1456,33 +1465,31 @@ int SG_GetSaveGameComment(const char *psPathlessBaseName, char *sComment, char *
 {
 	int ret = 0;
 	time_t tFileTime;
+	// Read complete disk records before publishing the strings to the menu.
+	// A failed/truncated record leaves an empty description, not a partial one.
+	char comment[iSG_COMMENT_SIZE];
+	char mapName[iSG_MAPCMD_SIZE];
+	if (sComment) sComment[0] = '\0';
+	if (sMapName) sMapName[0] = '\0';
 
-	qbSGReadIsTestOnly = qtrue;	// do NOT leave this in this state
-
-	if ( !SG_Open( psPathlessBaseName ))
+	qbSGReadIsTestOnly = qtrue;
+	if (!SG_Open(psPathlessBaseName))
 	{
 		qbSGReadIsTestOnly = qfalse;
 		return 0;
-	}							
-
-	if (SG_Read( 'COMM', sComment, iSG_COMMENT_SIZE ))
-	{	
-		if (SG_Read( 'CMTM', &tFileTime, sizeof( time_t )))	//read
-		{	
-			if (SG_Read('MPCM', sMapName, iSG_MAPCMD_SIZE ))	// read
-			{
-				ret = tFileTime;
-			}
-		}
 	}
+	if (SG_Read('COMM', comment, sizeof(comment)) &&
+		SG_Read('CMTM', &tFileTime, sizeof(tFileTime)) &&
+		SG_Read('MPCM', mapName, sizeof(mapName)))
+		ret = tFileTime;
 	qbSGReadIsTestOnly = qfalse;
 
-	XCalculateSignatureEnd( sg_sigHandleRead, &sg_validationHeaderRead.Signature );
-
-	if (!SG_Close())
-	{
+	XCalculateSignatureEnd(sg_sigHandleRead, &sg_validationHeaderRead.Signature);
+	if (!SG_Close() || !ret)
 		return 0;
-	}			
+
+	if (sComment) Q_strncpyz(sComment, comment, sizeof(comment));
+	if (sMapName) Q_strncpyz(sMapName, mapName, sizeof(mapName));
 	return ret;
 }
 
@@ -1792,8 +1799,13 @@ qboolean SG_WriteSavegame(const char *psPathlessBaseName, qboolean qbAutosave)
 //END JLF
 
 	char   sMapCmd[iSG_MAPCMD_SIZE]={0};
-	strcpy( sMapCmd,psMapName);	// need as array rather than ptr because const strlen needed for MPCM chunk
+	Q_strncpyz(sMapCmd, psMapName, sizeof(sMapCmd)); // MPCM stays a fixed-width on-disk record
 
+#ifdef _XBOX
+	const bool traceWrite = !SG_XboxIsCheckpointAlias(numberedmapname) && Cvar_VariableIntegerValue("stefx_saveTrace") != 0;
+	if (traceWrite)
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save stage=serialize.begin slot=%s", numberedmapname);
+#endif
 	SG_WriteComment(qbAutosave, numberedmapname);
 //	SG_WriteScreenshot(qbAutosave, sMapCmd);
 	SG_Append('MPCM', sMapCmd, sizeof(sMapCmd));
@@ -1827,11 +1839,16 @@ qboolean SG_WriteSavegame(const char *psPathlessBaseName, qboolean qbAutosave)
 	ge->WriteLevel(qbAutosave);	// always done now, but ent saver only does player if auto
 
 #ifdef _XBOX
-#ifdef _XBOX
+	if (traceWrite)
+	{
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save stage=serialize.end slot=%s", numberedmapname);
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save stage=close.begin slot=%s", numberedmapname);
+	}
 	XBLog_WriteRingMarker("STEFX_VV_SAVE: close save");
-#endif
 	if (!SG_CloseWrite())
 		gbSGWriteFailed = qtrue;
+	if (traceWrite)
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save stage=close.end slot=%s ok=%d", numberedmapname, !gbSGWriteFailed);
 #else
 	SG_Close();
 #endif

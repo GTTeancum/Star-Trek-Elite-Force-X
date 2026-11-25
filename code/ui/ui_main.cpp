@@ -163,7 +163,7 @@ typedef struct
 	char currentSaveFileDateTimeString[iSG_COMMENT_SIZE];	// file time and date
 	time_t currentSaveFileDateTime;
 #ifdef _XBOX
-	char currentSaveFileMap[32];			// map save game is from
+	char currentSaveFileMap[MAX_QPATH];	// fixed-size MPCM record from the save file
 #else
 	char currentSaveFileMap[MAX_TOKEN_CHARS];			// map save game is from
 #endif
@@ -172,6 +172,7 @@ typedef struct
 } savedata_t;
 
 static savedata_t s_savedata[MAX_SAVELOADFILES];
+static qboolean s_saveListIncomplete; // never pick a new slot from an unreadable or partial list
 
 //JLF
 char  g_loadsaveGameName[MAX_SAVELOADNAME];
@@ -204,7 +205,7 @@ static profileData_t s_ProfileData[MAX_PROFILEFILES];
 
 void UI_SetActiveMenu( const char* menuname,const char *menuID );
 void ReadSaveDirectory (void);
-static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars);
+static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars, const char *operation);
 //JLF MPMOVED
 #ifdef _XBOX
 
@@ -7756,11 +7757,11 @@ ReadSaveDirectory
 //for the xbox reading the save directory will consist of
 //iterating through the save game folders
 
-static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars)
+static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars, const char *operation)
 {
 
 	char	*holdChar;
-	char	*filetime,*tokentimeptr;
+	const bool trace = Cvar_VariableIntegerValue("stefx_saveTrace") != 0;
 	const char * newgame;
 	qboolean newGameActive,newGameAvailable;
 	char saveGameName[filepathlength];
@@ -7771,6 +7772,7 @@ static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars)
 	// Clear out save data
 	memset(s_savedata,0,sizeof(s_savedata));
 	s_savegame.saveFileCnt = 0;
+	s_saveListIncomplete = qfalse;
 	Cvar_Set("ui_gameDesc", "" );	// Blank out comment
 	Cvar_Set("ui_SelectionOK", "0" );
 
@@ -7784,7 +7786,6 @@ static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars)
 	holdChar = s_savegame.listBuf;
 	XGAME_FIND_DATA SaveGameData;
 	HANDLE searchhandle;
-	BOOL retval;
 
 	newGameActive =	(Cvar_VariableIntegerValue( "ui_newGameActive" )) ? qtrue : qfalse;
 	newGameAvailable = qfalse;
@@ -7814,7 +7815,7 @@ static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars)
 		if ( !newgame)
 			newgame = "New Game";
 	//END JLF
-		strcpy (holdChar, newgame);
+		Q_strncpyz(holdChar, newgame, sizeof(s_savegame.listBuf));
 		s_savedata[s_savegame.saveFileCnt].currentSaveFileName = holdChar;
 		holdChar += strlen(holdChar)+1;
 		s_savedata[s_savegame.saveFileCnt].currentSaveFileDateTime = 0;
@@ -7823,65 +7824,67 @@ static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars)
 		s_savegame.saveFileCnt++;
 	}
 
-    // Any saves?
-	searchhandle = XFindFirstSaveGame( "U:\\", &SaveGameData );
-	if ( searchhandle != INVALID_HANDLE_VALUE )
+	// A valid search must be closed even when it contains only Settings or
+	// the UI reaches its row limit. No save container is opened for writing here.
+	if (trace)
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save operation=%s stage=list.begin", operation);
+	DWORD scanResult = ERROR_SUCCESS;
+	searchhandle = XFindFirstSaveGame("U:\\", &SaveGameData);
+	if (searchhandle != INVALID_HANDLE_VALUE)
 	{
 		do
 		{
-			// At least one; count up the rest
-			DWORD dwCount = 1;
-			//get the name of the file
-
-			wcstombs(saveGameName, SaveGameData.szSaveGameName, filepathlength);
-
-			// Skip over Settings
-			if( Q_stricmp( saveGameName, "Settings" ) == 0 )
+			const size_t length = wcstombs(saveGameName, SaveGameData.szSaveGameName, sizeof(saveGameName));
+			if (length >= sizeof(saveGameName)) // includes conversion failure, (size_t)-1
 			{
-				retval = XFindNextSaveGame( searchhandle, &SaveGameData );
+				s_saveListIncomplete = qtrue;
 				continue;
 			}
-
-			strcpy( holdChar, saveGameName);
-
-
-			// Is this a valid file??? & Get comment of file
-					//create full path name
-			time_t result;
-			result = ui.SG_GetSaveGameComment(saveGameName, s_savedata[s_savegame.saveFileCnt].currentSaveFileComments, s_savedata[s_savegame.saveFileCnt].currentSaveFileMap);
-			if (result != 0) // ignore Bad save game
+			if (!length || !Q_stricmp(saveGameName, "Settings"))
+				continue;
+			if (length + 1 > (size_t)(s_savegame.listBuf + sizeof(s_savegame.listBuf) - holdChar))
 			{
-				s_savedata[s_savegame.saveFileCnt].corrupt = false;
-			}
-			else
-			{
-				s_savedata[s_savegame.saveFileCnt].corrupt = true;
-			}
-			{
-				s_savedata[s_savegame.saveFileCnt].currentSaveFileName = holdChar;
-				s_savedata[s_savegame.saveFileCnt].currentSaveFileDateTime = result;
-				holdChar += strlen(holdChar)+1;
-
-				struct tm *localTime;
-				localTime = localtime( &result );
-
-				// Wed Jan 02 02:03:55 1980\n\0
-				filetime = asctime (localTime);
-
-
-
-				strcpy(s_savedata[s_savegame.saveFileCnt].currentSaveFileDateTimeString, filetime );
-				s_savegame.saveFileCnt++;
-				if (s_savegame.saveFileCnt == MAX_SAVELOADFILES)
-				{
-					break;
-				}
-
+				s_saveListIncomplete = qtrue;
+				break;
 			}
 
-			retval =XFindNextSaveGame( searchhandle, &SaveGameData );
-		}while(retval);
+			savedata_t &row = s_savedata[s_savegame.saveFileCnt];
+			memcpy(holdChar, saveGameName, length + 1);
+			row.currentSaveFileName = holdChar;
+			holdChar += length + 1;
+
+			const time_t stamp = ui.SG_GetSaveGameComment(saveGameName, row.currentSaveFileComments, row.currentSaveFileMap);
+			row.currentSaveFileDateTime = stamp;
+			row.corrupt = (stamp == 0);
+			struct tm *localTime = localtime(&row.currentSaveFileDateTime);
+			const char *filetime = localTime ? asctime(localTime) : NULL;
+			if (filetime)
+				Q_strncpyz(row.currentSaveFileDateTimeString, filetime, sizeof(row.currentSaveFileDateTimeString));
+
+			if (++s_savegame.saveFileCnt == MAX_SAVELOADFILES)
+			{
+				s_saveListIncomplete = qtrue;
+				break;
+			}
+		} while (XFindNextSaveGame(searchhandle, &SaveGameData));
+		if (!s_saveListIncomplete)
+		{
+			scanResult = GetLastError(); // before XFindClose can replace it
+			if (scanResult != ERROR_NO_MORE_FILES)
+				s_saveListIncomplete = qtrue;
+		}
+		XFindClose(searchhandle);
 	}
+	else
+	{
+		scanResult = GetLastError();
+		// An empty U: is normal; a failed search is not evidence that slot 0 is free.
+		if (scanResult != ERROR_FILE_NOT_FOUND && scanResult != ERROR_NO_MORE_FILES)
+			s_saveListIncomplete = qtrue;
+	}
+	if (trace)
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save operation=%s stage=list.end count=%d incomplete=%d status=%lu",
+			operation, s_savegame.saveFileCnt, (int)s_saveListIncomplete, scanResult);
 
 	if ( newGameAvailable)
 		qsort( &(s_savedata[1]), s_savegame.saveFileCnt-1, sizeof(savedata_t), UI_SortSaveGames );
@@ -7897,7 +7900,11 @@ static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars)
 	else
 		Cvar_SetValue("overwriteAvailable", 0);
 
+	if (trace)
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save operation=%s stage=space.begin", operation);
 	setBlockDisplayCvar();
+	if (trace)
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save operation=%s stage=space.end", operation);
 
 	if (publishSelectionCvars)
 	{
@@ -7927,7 +7934,7 @@ static void ReadSaveDirectoryInternal(qboolean publishSelectionCvars)
 
 void ReadSaveDirectory(void)
 {
-	ReadSaveDirectoryInternal(qtrue);
+	ReadSaveDirectoryInternal(qtrue, "legacy-menu");
 }
 
 static qboolean UI_EFSave_ValidIndex(int index)
@@ -7936,14 +7943,19 @@ static qboolean UI_EFSave_ValidIndex(int index)
 		s_savedata[index].currentSaveFileName != NULL;
 }
 
-int UI_EFSave_Count(void)
+static int UI_EFSave_Refresh(const char *operation)
 {
 	Cvar_Set("ui_newGameActive", "0");
-	ReadSaveDirectoryInternal(qfalse);
+	ReadSaveDirectoryInternal(qfalse, operation);
 #ifdef _XBOX
 	XBLF("STEFX_SAVELOAD_MENU: refreshed count=%d", s_savegame.saveFileCnt);
 #endif
 	return s_savegame.saveFileCnt;
+}
+
+int UI_EFSave_Count(void)
+{
+	return UI_EFSave_Refresh("menu");
 }
 
 const char *UI_EFSave_Name(int index)
@@ -8032,6 +8044,9 @@ static qboolean UI_EFSave_QueueWrite(const char *name, const char *source)
 		return qfalse;
 	}
 
+	const bool trace = Cvar_VariableIntegerValue("stefx_saveTrace") != 0;
+	if (trace)
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save operation=%s stage=queue.begin slot=%s", source, name);
 	ui.SG_StoreSaveGameComment("");
 	Com_sprintf(command, sizeof(command), "save %s\n", name);
 #ifdef _XBOX
@@ -8043,6 +8058,8 @@ static qboolean UI_EFSave_QueueWrite(const char *name, const char *source)
 		ui.Cvar_Set("stefx_vv_save_fixture_name", name);
 #endif
 	ui.Cmd_ExecuteText(EXEC_APPEND, command);
+	if (trace)
+		XBLog_WriteCriticalf("STEFX_HW_CHECKPOINT save operation=%s stage=queue.end slot=%s", source, name);
 	return qtrue;
 }
 
@@ -8052,7 +8069,12 @@ qboolean UI_EFSave_CreateNew(void)
 	int candidate;
 	int index;
 
-	UI_EFSave_Count();
+	UI_EFSave_Refresh("new-slot");
+	if (s_saveListIncomplete)
+	{
+		XBLF("STEFX_SAVELOAD_MENU: save rejected source='new' reason='list incomplete or full'");
+		return qfalse;
+	}
 	for (candidate = 0; candidate < MAX_SAVELOADFILES; ++candidate)
 	{
 		qboolean inUse = qfalse;

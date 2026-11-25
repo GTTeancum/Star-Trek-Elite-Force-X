@@ -487,6 +487,35 @@ player_die
 ==================
 */
 void NPC_SetAnim(gentity_t	*ent,int type,int anim,int priority);
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+// Observe the actual selection *after* NPC_SetAnim, without choosing another
+// animation, advancing the RNG, or changing authored corpse/script behavior.
+static void STEFX_TraceDeathPose( const gentity_t *ent, int requested )
+{
+	static cvar_t *trace;
+	static unsigned int written;
+	if ( !ent->NPC || !ent->client || written >= 32 )
+		return;
+	if ( !trace )
+		trace = gi.cvar( "stefx_traceDeaths", "0", 0 );
+	if ( !trace->integer )
+		return;
+
+	const int set = ent->client->clientInfo.animFileIndex;
+	const bool validSet = set >= 0 && set < MAX_ANIM_FILES && set < numKnownAnimFileSets;
+	const bool validAnim = requested >= 0 && requested < MAX_ANIMATIONS;
+	const int frames = validSet && validAnim ?
+		knownAnimFileSets[set].animations[requested].numFrames : -1;
+	++written;
+	XBLog_WriteCriticalf( "STEFX_DEATH_POSE: map=%s time=%d ent=%d npc=%.48s legsModel=%.31s "
+		"set=%d requested=%d frames=%d legs=%d torso=%d pos=%d,%d,%d",
+		level.mapname, level.time, ent->s.number, ent->NPC_type ? ent->NPC_type : "-",
+		ent->client->renderInfo.legsModelName, set, requested, frames,
+		ent->client->ps.legsAnim & ~ANIM_TOGGLEBIT, ent->client->ps.torsoAnim & ~ANIM_TOGGLEBIT,
+		(int)ent->currentOrigin[0], (int)ent->currentOrigin[1], (int)ent->currentOrigin[2] );
+}
+#endif
+
 void player_die( gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int damage, int meansOfDeath ) 
 {
 	int			anim;
@@ -736,6 +765,9 @@ void player_die( gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int
 		}
 
 		NPC_SetAnim(self, SETANIM_BOTH, anim, SETANIM_FLAG_OVERRIDE|SETANIM_FLAG_HOLD);
+#if defined(_XBOX) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+		STEFX_TraceDeathPose( self, anim );
+#endif
 	}
 
 	// don't allow player to respawn for a few seconds

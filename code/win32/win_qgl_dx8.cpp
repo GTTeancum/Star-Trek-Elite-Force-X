@@ -3687,6 +3687,40 @@ static void dllBegin(GLenum mode)
 	assert(0);
 }
 
+#if defined(_XBOX) && defined(STEFX_RETAIL_RENDERER_ACTIVE) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+// Seed the picture only, once per scene, before any queued draws or portals.
+// Use a private D3D clear: do not alter GL clear color, depth, stencil, PVS,
+// or the viewport left by the previous draw. No GPU state calls when disabled.
+static void STEFX_TraceUnpaintedPixels( int left, int top, int right, int bottom )
+{
+	static cvar_t *probe;
+	static unsigned int reportedModes;
+	if ( !probe )
+		probe = Cvar_Get( "stefx_debugFrameClear", "0", 0 );
+	const int mode = probe->integer;
+	if ( mode != 1 && mode != 2 )
+		return;
+
+	const int width = glConfig.vidWidth, height = glConfig.vidHeight;
+	if ( width <= left + right || height <= top + bottom )
+		return;
+	D3DVIEWPORT8 previous;
+	D3DVIEWPORT8 full = { 0, 0, (DWORD)width, (DWORD)height, 0.0f, 1.0f };
+	D3DRECT picture = { left, top, width - right, height - bottom };
+	if ( FAILED(glw_state->device->GetViewport(&previous)) ||
+		 FAILED(glw_state->device->SetViewport(&full)) )
+		return;
+	const DWORD color = mode == 1 ? 0xff00ffff : 0xffffff00; // cyan or yellow, never flashing
+	const HRESULT hr = glw_state->device->Clear(1, &picture, D3DCLEAR_TARGET, color, 1.0f, 0);
+	glw_state->device->SetViewport(&previous);
+	if ( SUCCEEDED(hr) && !(reportedModes & mode) )
+	{
+		reportedModes |= mode;
+		XBLog_WriteCriticalf("STEFX_FRAME_CLEAR: campaign coverage probe mode=%d", mode);
+	}
+}
+#endif
+
 // EXTENSION: Start a new drawing frame
 GLboolean dllBeginFrame(void)
 {
@@ -3704,6 +3738,9 @@ GLboolean dllBeginFrame(void)
 		{
 			glw_state->device->Clear(0, NULL, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0);
 		}
+#if defined(STEFX_RETAIL_RENDERER_ACTIVE) && defined(STEFX_ELITE_FORCE_SP) && !defined(STEFX_SP_HOSTED_MP)
+		STEFX_TraceUnpaintedPixels(left, top, right, bottom);
+#endif
 	}
 #endif
 	return result;

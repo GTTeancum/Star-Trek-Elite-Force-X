@@ -385,6 +385,9 @@ void XBSettings::ApplyEFPreferences( void )
 #if !defined(STEFX_SP_HOSTED_MP)
 	// The EF Xbox stick convention uses negative pitch for normal Y look.
 	Cvar_SetValue("m_pitch", invertAim[0] ? 0.022f : -0.022f);
+	// Campaign uses the existing signed P1 preference. Holomatch owns its
+	// per-player vibration settings and must not inherit the campaign switch.
+	Cvar_SetValue("in_useRumble", rumble[0] ? 1 : 0);
 #endif
 	Cvar_Set("r_textureMode", textureFilter ? "GL_LINEAR_MIPMAP_LINEAR" : "GL_LINEAR_MIPMAP_NEAREST");
 	Cvar_SetValue("stefx_safeAreaLeft", safeAreaLeft);

@@ -92,7 +92,8 @@ struct PadInfo
 // Buffer for gamepad info
 extern PadInfo _padInfo;
 
-bool IN_RumbleAdjust(int controller, int left, int right);
+// Set the latest desired motor speeds. Xbox sends them when the port is ready.
+void IN_RumbleAdjust(int controller, int left, int right);
 void IN_RumbleInit (void);
 void IN_RumbleShutdown (void);
 void IN_RumbleFrame (void);

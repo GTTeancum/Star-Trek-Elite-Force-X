@@ -347,6 +347,9 @@ static int s_videoOriginalRight = 0;
 static int s_videoOriginalBottom = 0;
 static qboolean s_videoTrilinear = qfalse;
 static qboolean s_controllerInvertY = qfalse;
+#if defined(_XBOX) && !defined(STEFX_SP_HOSTED_MP)
+static qboolean s_controllerVibration = qtrue;
+#endif
 static char s_menuSmokeTarget[32];
 static int s_menuSmokeStage = 0;
 static int s_menuSmokeNextRealtime = 0;
@@ -1086,6 +1089,13 @@ static int EFFe_TextWidth(const char *text, int fontIndex)
 	return (int)(EFFe_TextWidthScaled(text, fontIndex, 1.0f) + 0.5f);
 }
 
+static float EFFe_FitTextScale(const char *text, int fontIndex, float preferredScale, float maxPs2Width)
+{
+	float width = EFFe_TextWidthScaled(text, fontIndex, preferredScale);
+	float maxWidth = EF_PS2_W(maxPs2Width);
+	return width > maxWidth && width > 0.0f ? preferredScale * maxWidth / width : preferredScale;
+}
+
 static void EFFe_DrawTextScaledXYColor(float x, float y, const char *text, int fontIndex, int style, const float *color, float xScale, float yScale)
 {
 	const unsigned char *s;
@@ -1460,10 +1470,13 @@ static void EFFe_DrawPs2PromptIcon(float x, float y, qhandle_t icon)
 	}
 }
 
+static const float s_promptTextOffset = 44.0f;
+static const float s_promptTextScale = 0.68f;
+
 static void EFFe_DrawPromptLabel(float x, float y, const char *label)
 {
-	EFFe_DrawPs2TextColor(x, y, ":", EF_FRONTEND_FONT_BIG, UI_LEFT, colorTable[CT_WHITE], 0.68f, 1.02f);
-	EFFe_DrawPs2TextColor(x + 44.0f, y, label, EF_FRONTEND_FONT_BIG, UI_LEFT, colorTable[CT_WHITE], 0.68f, 1.02f);
+	EFFe_DrawPs2TextColor(x, y, ":", EF_FRONTEND_FONT_BIG, UI_LEFT, colorTable[CT_WHITE], s_promptTextScale, 1.02f);
+	EFFe_DrawPs2TextColor(x + s_promptTextOffset, y, label, EF_FRONTEND_FONT_BIG, UI_LEFT, colorTable[CT_WHITE], s_promptTextScale, 1.02f);
 }
 
 static void EFFe_DrawPanelCode(float x, float y, const char *code)
@@ -1501,20 +1514,23 @@ static void EFFe_DrawControllerAcceptCancelPrompt(void)
 	EFFe_DrawPromptLabel(1583.0f, 70.0f, "Cancel");
 }
 
-static void EFFe_DrawLoadPrompt(void)
+static void EFFe_DrawSlotPrompts(const char *action, const char *back)
 {
-	EFFe_DrawPs2PromptIcon(690.0f, 586.0f, s_assets.xboxA);
-	EFFe_DrawPromptLabel(765.0f, 598.0f, "Select");
-	EFFe_DrawPs2PromptIcon(995.0f, 586.0f, s_assets.xboxY);
-	EFFe_DrawPromptLabel(1070.0f, 598.0f, "Back");
-}
-
-static void EFFe_DrawSavePrompt(void)
-{
-	EFFe_DrawPs2PromptIcon(690.0f, 586.0f, s_assets.xboxA);
-	EFFe_DrawPromptLabel(765.0f, 598.0f, s_saveOverwritePending ? "Overwrite" : "Save");
-	EFFe_DrawPs2PromptIcon(995.0f, 586.0f, s_assets.xboxY);
-	EFFe_DrawPromptLabel(1070.0f, 598.0f, s_saveOverwritePending ? "Cancel" : "Back");
+	// Reserve the longest labels even before confirmation. The icons stay put
+	// when A arms a slot, with 30 logical pixels between Overwrite and Y.
+	const float caption = 75.0f;
+	const float gap = 90.0f;
+	const float y = 755.0f;
+	const float actionW = caption + s_promptTextOffset +
+		EFFe_TextWidthScaled("Overwrite", EF_FRONTEND_FONT_BIG, s_promptTextScale) * (EF_PS2_VIEW_W / 640.0f);
+	const float backW = caption + s_promptTextOffset +
+		EFFe_TextWidthScaled("Cancel", EF_FRONTEND_FONT_BIG, s_promptTextScale) * (EF_PS2_VIEW_W / 640.0f);
+	const float ax = (EF_PS2_VIEW_W - actionW - gap - backW) * 0.5f;
+	const float yx = ax + actionW + gap;
+	EFFe_DrawPs2PromptIcon(ax, y, s_assets.xboxA);
+	EFFe_DrawPromptLabel(ax + caption, y + 12.0f, action);
+	EFFe_DrawPs2PromptIcon(yx, y, s_assets.xboxY);
+	EFFe_DrawPromptLabel(yx + caption, y + 12.0f, back);
 }
 
 static void EFFe_DrawVideoPrompt(void)
@@ -1787,6 +1803,20 @@ static void EFFe_DrawNewGameScreen(void)
 	EFFe_DrawNewGameLayout(qfalse);
 }
 
+static void EFFe_DrawSlotRow(int row, const char *comment, const char *detail, const float *fill,
+	const float *textColor, const float *detailColor)
+{
+	// Six rows end at y=720, leaving a dedicated footer inside the frame.
+	// Lay out the two lines separately: centering the name in the whole row
+	// previously drew its last few pixels over the map/confirmation detail.
+	const float y = 199.0f + (float)row * 89.0f;
+	EFFe_DrawRightRoundButton(360.0f, y, 1190.0f, 76.0f, NULL, fill, textColor);
+	EFFe_DrawPs2TextColor(394.0f, y + 4.0f, comment, EF_FRONTEND_FONT_BIG, UI_LEFT, textColor,
+		EFFe_FitTextScale(comment, EF_FRONTEND_FONT_BIG, 0.82f, 1100.0f), 1.0f);
+	EFFe_DrawPs2TextColor(394.0f, y + 54.0f, detail, EF_FRONTEND_FONT_TINY, UI_LEFT, detailColor,
+		EFFe_FitTextScale(detail, EF_FRONTEND_FONT_TINY, 0.82f, 1100.0f), 1.0f);
+}
+
 static void EFFe_DrawLoadGameScreen(void)
 {
 	int i;
@@ -1826,13 +1856,11 @@ static void EFFe_DrawLoadGameScreen(void)
 			const float *textColor = UI_EFSave_IsCorrupt(i) ? s_ps2AudioGray : colorTable[CT_BLACK];
 			Q_strncpyz(comment, UI_EFSave_Comment(i), sizeof(comment));
 			Com_sprintf(detail, sizeof(detail), "%s  %s", UI_EFSave_Map(i), UI_EFSave_IsCorrupt(i) ? "CORRUPT" : UI_EFSave_Name(i));
-			EFFe_DrawRightRoundButton(360.0f, 215.0f + (float)(i - first) * 93.0f, 1190.0f, 76.0f,
-				comment[0] ? comment : UI_EFSave_Name(i), fill, textColor);
-			EFFe_DrawPs2TextColor(405.0f, 267.0f + (float)(i - first) * 93.0f, detail,
-				EF_FRONTEND_FONT_TINY, UI_LEFT, i == s_cursor ? s_ps2SelectedText : s_ps2MapGold, 0.82f, 1.0f);
+			EFFe_DrawSlotRow(i - first, comment[0] ? comment : UI_EFSave_Name(i), detail,
+				fill, textColor, i == s_cursor ? s_ps2SelectedText : s_ps2MapGold);
 		}
 	}
-	EFFe_DrawLoadPrompt();
+	EFFe_DrawSlotPrompts("Select", "Back");
 }
 
 static void EFFe_DrawSaveGameScreen(void)
@@ -1892,13 +1920,11 @@ static void EFFe_DrawSaveGameScreen(void)
 			}
 		}
 
-		EFFe_DrawRightRoundButton(360.0f, 215.0f + (float)(i - first) * 93.0f, 1190.0f, 76.0f,
-			comment, fill, textColor);
-		EFFe_DrawPs2TextColor(405.0f, 267.0f + (float)(i - first) * 93.0f, detail,
-			EF_FRONTEND_FONT_TINY, UI_LEFT, i == s_cursor ? s_ps2SelectedText : s_ps2MapGold, 0.82f, 1.0f);
+		EFFe_DrawSlotRow(i - first, comment, detail, fill, textColor,
+			i == s_cursor ? s_ps2SelectedText : s_ps2MapGold);
 	}
 
-	EFFe_DrawSavePrompt();
+	EFFe_DrawSlotPrompts(s_saveOverwritePending ? "Overwrite" : "Save", s_saveOverwritePending ? "Cancel" : "Back");
 }
 
 static void EFFe_DrawCoopScreen(void)
@@ -2080,17 +2106,6 @@ static int EFFe_HolomatchCharacterIndexForCrewMember(int crewMember)
 	return 0;
 }
 
-static float EFFe_HolomatchPlayerTextScale(const char *text, float preferredScale, float maxPs2Width)
-{
-	float width = EFFe_TextWidthScaled(text, EF_FRONTEND_FONT_MEDIUM, preferredScale);
-	float maxWidth = EF_PS2_W(maxPs2Width);
-	if (width > maxWidth && width > 0.0f)
-	{
-		return preferredScale * maxWidth / width;
-	}
-	return preferredScale;
-}
-
 static qboolean EFFe_HolomatchMenuSmokeUsesVirtualPads(void)
 {
 	return s_holomatchMenuVirtualPads;
@@ -2100,8 +2115,8 @@ static void EFFe_DrawHolomatchPlayerOption(float x, float centerX, float y, cons
 	const char *value, qhandle_t valuePic, qboolean selected)
 {
 	const float *valueColor = selected ? s_ps2MapGold : s_ps2ButtonSelected;
-	float labelScale = EFFe_HolomatchPlayerTextScale(label, 0.79f, 350.0f);
-	float valueScale = EFFe_HolomatchPlayerTextScale(value, 0.79f, 320.0f);
+	float labelScale = EFFe_FitTextScale(label, EF_FRONTEND_FONT_MEDIUM, 0.79f, 350.0f);
+	float valueScale = EFFe_FitTextScale(value, EF_FRONTEND_FONT_MEDIUM, 0.79f, 320.0f);
 	EFFe_DrawPs2TextColor(centerX, y, label, EF_FRONTEND_FONT_MEDIUM, UI_CENTER,
 		selected ? colorTable[CT_WHITE] : s_ps2SelectedText, labelScale, 1.00f);
 	if (value && value[0])
@@ -2732,10 +2747,20 @@ static void EFFe_DrawControllerScreen(void)
 	EFFe_DrawControllerAnalogText(1070.0f, 628.0f, s_controllerInvertY ? "LOOK DOWN" : "LOOK UP");
 	EFFe_DrawControllerAnalogText(1070.0f, 670.0f, "TURN LEFT");
 	EFFe_DrawControllerAnalogText(1070.0f, 708.0f, "TURN RIGHT");
-	EFFe_DrawControllerGlyph(650.0f, 770.0f, 44.0f, 44.0f, s_assets.xboxDpad[2]);
-	EFFe_DrawControllerGlyph(1225.0f, 770.0f, 44.0f, 44.0f, s_assets.xboxDpad[3]);
-	EFFe_DrawPs2TextColor(960.0f, 770.0f, s_controllerInvertY ? "INVERT Y: ON" : "INVERT Y: OFF",
-		EF_FRONTEND_FONT_BIG, UI_CENTER, s_ps2MapGold, 0.75f, 1.00f);
+#if defined(_XBOX) && !defined(STEFX_SP_HOSTED_MP)
+	const float invertCenter = 705.0f;
+	const char *vibrationLabel = s_controllerVibration ? "VIBRATION: ON" : "VIBRATION: OFF";
+	EFFe_DrawControllerGlyph(1110.0f, 766.0f, 46.0f, 52.0f, s_assets.xboxX);
+	EFFe_DrawPs2TextColor(1174.0f, 770.0f, vibrationLabel, EF_FRONTEND_FONT_BIG, UI_LEFT, s_ps2MapGold,
+		EFFe_FitTextScale(vibrationLabel, EF_FRONTEND_FONT_BIG, 0.75f, 488.0f), 1.00f);
+#else
+	const float invertCenter = 960.0f;
+#endif
+	const char *invertLabel = s_controllerInvertY ? "INVERT Y: ON" : "INVERT Y: OFF";
+	EFFe_DrawControllerGlyph(invertCenter - 310.0f, 770.0f, 44.0f, 44.0f, s_assets.xboxDpad[2]);
+	EFFe_DrawControllerGlyph(invertCenter + 265.0f, 770.0f, 44.0f, 44.0f, s_assets.xboxDpad[3]);
+	EFFe_DrawPs2TextColor(invertCenter, 770.0f, invertLabel, EF_FRONTEND_FONT_BIG, UI_CENTER, s_ps2MapGold,
+		EFFe_FitTextScale(invertLabel, EF_FRONTEND_FONT_BIG, 0.75f, 492.0f), 1.00f);
 }
 
 static void EFFe_LoadAudioState(void)
@@ -2798,6 +2823,9 @@ static void EFFe_CancelAudioState(void)
 static void EFFe_LoadControllerState(void)
 {
 	s_controllerInvertY = ui.Cvar_VariableValue("m_pitch") > 0 ? qtrue : qfalse;
+#if defined(_XBOX) && !defined(STEFX_SP_HOSTED_MP)
+	s_controllerVibration = ui.Cvar_VariableValue("in_useRumble") != 0 ? qtrue : qfalse;
+#endif
 }
 
 static void EFFe_LoadVideoState(void)
@@ -4315,6 +4343,13 @@ static void EFFe_HandleVideoKey(int key)
 
 static void EFFe_HandleControllerKey(int key)
 {
+#if defined(_XBOX) && !defined(STEFX_SP_HOSTED_MP)
+	if (key == A_JOY16) // X: stage campaign vibration; A accepts, Y discards.
+	{
+		s_controllerVibration = s_controllerVibration ? qfalse : qtrue;
+		return;
+	}
+#endif
 	if (EFFe_IsBackKey(key))
 	{
 		EFFe_ReturnToConfigure();
@@ -4325,6 +4360,10 @@ static void EFFe_HandleControllerKey(int key)
 		ui.Cvar_SetValue("m_pitch", s_controllerInvertY ? 0.022f : -0.022f);
 #ifdef _XBOX
 		Settings.invertAim[0] = s_controllerInvertY != qfalse;
+#if !defined(STEFX_SP_HOSTED_MP)
+		Settings.rumble[0] = s_controllerVibration ? 1 : 0;
+		ui.Cvar_SetValue("in_useRumble", (float)Settings.rumble[0]);
+#endif
 		if (!Settings.Save())
 		{
 			XBLog_WriteCritical("STEFX_SETTINGS: controller settings persistence failed");
