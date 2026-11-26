@@ -27,6 +27,25 @@ checkpoint last seen in RAM can precede a blocking log flush and does not
 on its own identify the next game operation as the stall. The Linux tests
 exercise the real source callbacks with mocked D3D/files, not the hardware.
 
+**Rumble and overwrite controls.** On the same unmodified Xbox candidate, try
+the reporter's third-party controller/adapter and an original Xbox controller
+as a control. Fire one shot and release the trigger; note whether the motor
+stops without a second shot or a menu transition. In the campaign controller
+settings, use **X** to stage the Vibration change, **A** to keep it and **Y**
+to discard it. Check enable, disable, pause/resume and a new shot, then restart
+to verify the accepted setting persists. These changes apply to campaign,
+not Holomatch. The rumble regression uses the real firing/dispatch path
+with simulated feedback, not controller hardware.
+
+With an existing slot, select it and verify the **Overwrite** prompt and the
+**Y / Cancel** hint stay clear of each other at 480p and 720p; cancel once
+without touching the save, then confirm an overwrite on an isolated test slot.
+Check a full list, where the old footer crowded the last visible row.
+Linux source/host regressions:
+`python3 scripts/tests/verify_issue6_rumble.py` and
+`python3 scripts/tests/verify_issue6_frontend.py`. Passing them does not
+qualify the console's display or motor behavior.
+
 **Trails in dark shafts/ceilings.** The first screenshot matches the lift
 shaft in `borg2` (Incursion). Its green lift marking uses a shader unique to
 that map in the v0.9.4 campaign package. Two solid, opaque black world faces
